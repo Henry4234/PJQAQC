@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>QAQC 品管管理系統</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo">🧪</span>
+      <div>
+        <h1>QAQC 品管管理系統</h1>
+        <p class="subtitle">Laboratory Quality Control · Westgard Rules</p>
+      </div>
+    </div>
+    <nav class="tabs">
+      <button class="tab active" data-view="dashboard">儀表板</button>
+      <button class="tab" data-view="records">品管紀錄</button>
+      <button class="tab" data-view="lj">L-J Chart</button>
+      <button class="tab" data-view="ai">AI 判讀</button>
+      <button class="tab" data-view="add">新增品管</button>
+    </nav>
+  </header>
+
+  <main>
+    <!-- ============ Dashboard ============ -->
+    <section id="view-dashboard" class="view active">
+      <div class="view-head">
+        <h2>今日品管儀表板</h2>
+        <div class="date-picker">
+          <label>日期</label>
+          <input type="date" id="dash-date" />
+          <button id="dash-refresh" class="btn-sm">重新整理</button>
+        </div>
+      </div>
+
+      <div class="cards">
+        <div class="card">
+          <div class="card-label">今日品管次數</div>
+          <div class="card-value" id="stat-total">–</div>
+        </div>
+        <div class="card ok">
+          <div class="card-label">通過 (Pass)</div>
+          <div class="card-value" id="stat-pass">–</div>
+        </div>
+        <div class="card warn">
+          <div class="card-label">警告 (Warning)</div>
+          <div class="card-value" id="stat-warn">–</div>
+        </div>
+        <div class="card danger">
+          <div class="card-label">不符合 / 失敗 (Fail)</div>
+          <div class="card-value" id="stat-fail">–</div>
+        </div>
+        <div class="card danger">
+          <div class="card-label">違反 Westgard 規則</div>
+          <div class="card-value" id="stat-westgard">–</div>
+        </div>
+        <div class="card">
+          <div class="card-label">通過率</div>
+          <div class="card-value" id="stat-rate">–</div>
+        </div>
+      </div>
+
+      <div class="panels">
+        <div class="panel">
+          <h3>違反 Westgard 規則明細</h3>
+          <div id="violation-list" class="violation-list"></div>
+        </div>
+        <div class="panel">
+          <h3>規則違規次數</h3>
+          <div id="rule-bars" class="rule-bars"></div>
+          <h3 style="margin-top:18px">各儀器品管狀況</h3>
+          <div id="instrument-list" class="instrument-list"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ Records ============ -->
+    <section id="view-records" class="view">
+      <div class="view-head">
+        <h2>品管紀錄</h2>
+      </div>
+      <div class="filter-bar">
+        <div class="filter-item">
+          <label>起始日期</label>
+          <input type="date" id="rec-from" />
+        </div>
+        <div class="filter-item">
+          <label>結束日期</label>
+          <input type="date" id="rec-to" />
+        </div>
+        <div class="filter-item">
+          <label>組別</label>
+          <select id="rec-group">
+            <option value="">全部組別</option>
+          </select>
+        </div>
+        <div class="filter-item">
+          <label>儀器 (S/N)</label>
+          <select id="rec-instrument">
+            <option value="">全部儀器</option>
+          </select>
+        </div>
+        <button id="rec-refresh" class="btn-sm">查詢</button>
+        <button id="rec-reset" class="btn-sm ghost">重設</button>
+      </div>
+      <div class="table-wrap">
+        <table id="records-table">
+          <thead>
+            <tr>
+              <th>日期</th><th>時間</th><th>儀器</th><th>科別</th><th>項目</th>
+              <th>濃度</th><th>結果</th><th>單位</th><th>均值</th><th>SD</th>
+              <th>Z-score</th><th>狀態</th><th>Westgard</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- ============ L-J Chart ============ -->
+    <section id="view-lj" class="view">
+      <div class="view-head">
+        <h2>Levey-Jennings Chart</h2>
+      </div>
+      <div class="filter-bar">
+        <div class="filter-item">
+          <label>起始日期</label>
+          <input type="date" id="lj-from" />
+        </div>
+        <div class="filter-item">
+          <label>結束日期</label>
+          <input type="date" id="lj-to" />
+        </div>
+        <div class="filter-item">
+          <label>組別</label>
+          <select id="lj-group"></select>
+        </div>
+        <div class="filter-item">
+          <label>儀器 (S/N)</label>
+          <select id="lj-instrument"></select>
+        </div>
+        <div class="filter-item">
+          <label>檢驗項目</label>
+          <select id="lj-test"></select>
+        </div>
+        <button id="lj-refresh" class="btn-sm">繪圖</button>
+      </div>
+      <div class="lj-legend">
+        <span><i class="dot ok"></i>Pass</span>
+        <span><i class="dot warn"></i>Warning (±2SD)</span>
+        <span><i class="dot danger"></i>Fail (±3SD)</span>
+        <span class="ln mean">— Mean</span>
+        <span class="ln s1">— ±1SD</span>
+        <span class="ln s2">— ±2SD</span>
+        <span class="ln s3">— ±3SD</span>
+      </div>
+      <div id="lj-charts"></div>
+    </section>
+
+    <!-- ============ AI 判讀 ============ -->
+    <section id="view-ai" class="view">
+      <div class="view-head">
+        <h2>AI 品管判讀</h2>
+      </div>
+      <div class="filter-bar">
+        <div class="filter-item">
+          <label>組別</label>
+          <select id="ai-group"></select>
+        </div>
+        <div class="filter-item">
+          <label>儀器 (S/N)</label>
+          <select id="ai-instrument"></select>
+        </div>
+        <div class="filter-item">
+          <label>起始日期</label>
+          <input type="date" id="ai-from" />
+        </div>
+        <div class="filter-item">
+          <label>結束日期</label>
+          <input type="date" id="ai-to" />
+        </div>
+        <div class="filter-item">
+          <label>檢驗項目</label>
+          <select id="ai-test"></select>
+        </div>
+      </div>
+      <div class="ai-actions">
+        <button id="ai-run" class="btn">AI 判讀</button>
+      </div>
+      <div id="ai-result" class="ai-result"></div>
+    </section>
+
+    <!-- ============ Add ============ -->
+    <section id="view-add" class="view">
+      <div class="view-head"><h2>新增品管結果</h2></div>
+      <form id="add-form" class="form-grid">
+        <input type="hidden" name="instrument_name" id="add-instrument-name" />
+        <label>組別*<select id="add-group" required></select></label>
+        <label>儀器 (S/N)*<select id="add-instrument" name="instrument_serial_number" required></select></label>
+        <label>科別<input name="department" id="add-department" readonly /></label>
+        <label>操作者<input name="operator" value="MT001" /></label>
+        <label>品管日期*<input type="date" name="qc_date" required /></label>
+        <label>品管時間*<input type="time" step="1" name="qc_time" required /></label>
+        <label>檢驗項目*<input name="test_item" required value="WBC" /></label>
+        <label>項目全名<input name="test_item_full_name" value="White Blood Cell Count" /></label>
+        <label>品管濃度<input name="qc_level" value="Level 1" /></label>
+        <label>品管批號<input name="qc_lot_number" value="QC-WBC-L1-202606" /></label>
+        <label>結果值*<input type="number" step="any" name="qc_result_value" required /></label>
+        <label>單位<input name="unit" value="10^3/uL" /></label>
+        <label>批號均值 (Mean)*<input type="number" step="any" name="lot_mean" required value="5.00" /></label>
+        <label>批號標準差 (SD)*<input type="number" step="any" name="lot_standard_deviation" required value="0.25" /></label>
+        <label>可接受下限<input type="number" step="any" name="acceptable_range_lower" value="4.50" /></label>
+        <label>可接受上限<input type="number" step="any" name="acceptable_range_upper" value="5.50" /></label>
+        <label class="full">備註<input name="remark" placeholder="留空則自動填入" /></label>
+        <div class="form-actions full">
+          <button type="submit" class="btn">送出（自動計算 Z-score 與 Westgard）</button>
+          <span id="add-msg" class="add-msg"></span>
+        </div>
+      </form>
+    </section>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>

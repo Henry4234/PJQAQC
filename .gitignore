@@ -1,0 +1,32 @@
+# 環境變數與機密（請勿提交真實金鑰）
+.env
+.env.local
+*.env
+
+# Python 虛擬環境
+venv/
+.venv/
+env/
+
+# Python 快取
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# uv
+.uv/
+
+# 作業系統 / 編輯器
+.DS_Store
+.vscode/
+.idea/
+
+# Claude Code 本機設定
+.claude/
+
+# 測試產出
+*.png
+!frontend/**/*.png
