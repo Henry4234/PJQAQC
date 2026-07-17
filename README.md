@@ -4,12 +4,12 @@
 
 - **前端**：原生 HTML / CSS / JavaScript 網頁（儀表板、紀錄查詢、新增品管）
 - **後端**：Python FastAPI（API + 提供前端靜態檔）
-- **資料庫**：Supabase（PostgreSQL），資料表 `qc_records`
+- **資料庫**：MySQL（NAS 區域網路），資料表 `instruments`、`qc_records`
 
 ## 架構
 
 ```
-瀏覽器 (frontend/)  ──fetch /api/*──►  FastAPI (backend/main.py)  ──►  Supabase
+瀏覽器 (frontend/)  ──fetch /api/*──►  FastAPI (backend/main.py)  ──►  MySQL (NAS)
 ```
 
 ## 目錄結構
@@ -18,8 +18,10 @@
 PJQAQC/
 ├── backend/
 │   ├── main.py            # FastAPI 主程式（API + 靜態前端）
+│   ├── database.py        # MySQL 連線模組
 │   ├── westgard.py        # Westgard 多規則判讀邏輯
 │   ├── westgard_guide.md  # AI 判讀用的實驗室規則說明
+│   ├── init_db.sql        # MySQL 資料表建立腳本
 │   ├── pyproject.toml     # uv 依賴定義
 │   ├── requirements.txt   # pip 相容依賴清單
 │   └── .env.sample        # 環境變數範本（複製為 .env 後填值）
@@ -36,12 +38,15 @@ PJQAQC/
 cd backend
 
 # 1. 建立環境變數檔並填入金鑰
-cp .env.sample .env        # 接著編輯 .env 填入 SUPABASE_URL / SUPABASE_KEY / ANTHROPIC_API_KEY
+cp .env.sample .env        # 接著編輯 .env 填入 MySQL 連線資訊 / ANTHROPIC_API_KEY
 
 # 2. 用 uv 建立虛擬環境並安裝依賴（比 venv + pip 快很多）
 uv sync
 
-# 3. 啟動伺服器
+# 3. 初始化 MySQL 資料表（首次）
+mysql -h 192.168.0.111 -u PJQAQC -p PJQAQC < init_db.sql
+
+# 4. 啟動伺服器
 uv run uvicorn main:app --host 127.0.0.1 --port 8000 --reload
 ```
 
@@ -53,6 +58,7 @@ uv run uvicorn main:app --host 127.0.0.1 --port 8000 --reload
 
 | 方法 | 路徑 | 說明 |
 |------|------|------|
+| GET  | `/api/instruments` | 儀器主檔（依組別分群）|
 | GET  | `/api/dashboard?target_date=YYYY-MM-DD` | 儀表板統計（預設今天）|
 | GET  | `/api/records?qc_date=&test_item=&limit=` | 品管紀錄查詢 |
 | POST | `/api/records` | 新增品管（自動算 Z-score 與 Westgard 判讀）|
@@ -64,7 +70,7 @@ uv run uvicorn main:app --host 127.0.0.1 --port 8000 --reload
 
 「AI 判讀」分頁可選擇組別、儀器、日期區間、檢驗項目，按下「AI 判讀」後：
 
-1. 後端從 Supabase 提取所選品管資料
+1. 後端從 MySQL 提取所選品管資料
 2. 以 [backend/westgard_guide.md](backend/westgard_guide.md)（實驗室規則說明，含 1-3s / 2-2s 等違規時的試劑、隨機誤差、人員等可能成因）作為系統提示
 3. 連線 Anthropic Claude（預設 `claude-opus-4-8`，adaptive thinking）做專業判讀並回傳矯正建議
 
@@ -81,9 +87,8 @@ uv run uvicorn main:app --host 127.0.0.1 --port 8000 --reload
 `westgard.py` 實作：`1-2s`（警告）、`1-3s`、`2-2s`、`R-4s`、`4-1s`、`10x`。
 新增品管時，後端會撈同儀器 / 項目 / 濃度的歷史 z-score 序列做連續型規則（2-2s、4-1s、10x 等）判讀。
 
-## 資料庫 Schema (`qc_records`)
+## 資料庫 Schema
 
 含儀器、科別、檢驗項目、品管濃度 / 批號、結果值、批號均值 / SD、可接受範圍、
 z-score、品管狀態（Pass / Warning / Fail）、Westgard 違規規則、備註等欄位。
-
-> 注意：目前 Supabase RLS 政策為 demo 用途開放 anon 全權限，正式上線前請收緊。
+詳見 [backend/init_db.sql](backend/init_db.sql)。

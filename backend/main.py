@@ -1,7 +1,7 @@
 """QAQC 管理系統後端 (FastAPI)。
 
 職責：
-  - 連線 Supabase 讀寫品管紀錄 (qc_records)
+  - 連線 MySQL 讀寫品管紀錄 (qc_records) 與儀器主檔 (instruments)
   - 提供 Dashboard 統計指標 API
   - 提供品管紀錄的查詢 / 新增 API（新增時自動計算 z-score 與 Westgard 判讀）
   - 提供前端靜態網頁
@@ -17,19 +17,11 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
-from supabase import Client, create_client
 
+import database as db
 import westgard
 
 load_dotenv()
-
-SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
-SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "")
-
-if not SUPABASE_URL or not SUPABASE_KEY:
-    raise RuntimeError("缺少 SUPABASE_URL 或 SUPABASE_KEY，請檢查 backend/.env")
-
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 app = FastAPI(title="QAQC 管理系統 API", version="1.0.0")
 
@@ -39,9 +31,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-TABLE = "qc_records"
-INSTRUMENT_TABLE = "instruments"
 
 # AI 判讀設定
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
@@ -81,19 +70,21 @@ def _today_str() -> str:
     return date.today().isoformat()
 
 
+def _serials_in_group(lab_group: str) -> list[str]:
+    rows = db.fetch_all(
+        "SELECT serial_number FROM instruments WHERE lab_group = %s",
+        (lab_group,),
+    )
+    return [r["serial_number"] for r in rows]
+
+
 # ------------------------------- API ------------------------------- #
 @app.get("/api/instruments")
 def list_instruments():
     """回傳儀器主檔，依組別分群，供前端雙層選單使用。"""
-    rows = (
-        supabase.table(INSTRUMENT_TABLE)
-        .select("*")
-        .eq("active", True)
-        .order("lab_group")
-        .order("instrument_name")
-        .order("machine_role")
-        .execute()
-        .data
+    rows = db.fetch_all(
+        "SELECT * FROM instruments WHERE active = TRUE "
+        "ORDER BY lab_group, instrument_name, machine_role"
     )
     grouped: dict[str, list] = {}
     for r in rows:
@@ -101,28 +92,21 @@ def list_instruments():
     return {"groups": grouped, "all": rows}
 
 
-def _serials_in_group(lab_group: str) -> list[str]:
-    rows = (
-        supabase.table(INSTRUMENT_TABLE)
-        .select("serial_number")
-        .eq("lab_group", lab_group)
-        .execute()
-        .data
-    )
-    return [r["serial_number"] for r in rows]
-
-
 @app.get("/api/test-items")
 def list_test_items(instrument_serial_number: str | None = Query(None)):
     """回傳某儀器（或全部）有紀錄的檢驗項目清單，供 L-J chart 選單使用。"""
-    q = supabase.table(TABLE).select("test_item, test_item_full_name")
     if instrument_serial_number:
-        q = q.eq("instrument_serial_number", instrument_serial_number)
-    rows = q.execute().data
-    seen: dict[str, str | None] = {}
-    for r in rows:
-        seen.setdefault(r["test_item"], r.get("test_item_full_name"))
-    return [{"test_item": k, "test_item_full_name": v} for k, v in sorted(seen.items())]
+        rows = db.fetch_all(
+            "SELECT DISTINCT test_item, test_item_full_name FROM qc_records "
+            "WHERE instrument_serial_number = %s ORDER BY test_item",
+            (instrument_serial_number,),
+        )
+    else:
+        rows = db.fetch_all(
+            "SELECT DISTINCT test_item, test_item_full_name FROM qc_records "
+            "ORDER BY test_item"
+        )
+    return [{"test_item": r["test_item"], "test_item_full_name": r.get("test_item_full_name")} for r in rows]
 
 
 @app.get("/api/records")
@@ -135,40 +119,48 @@ def list_records(
     test_item: str | None = Query(None),
     limit: int = Query(500, le=2000),
 ):
-    q = supabase.table(TABLE).select("*").order("qc_date", desc=True).order("qc_time", desc=True)
+    conditions = []
+    params: list = []
+
     if qc_date:
-        q = q.eq("qc_date", qc_date)
+        conditions.append("qc_date = %s")
+        params.append(qc_date)
     if date_from:
-        q = q.gte("qc_date", date_from)
+        conditions.append("qc_date >= %s")
+        params.append(date_from)
     if date_to:
-        q = q.lte("qc_date", date_to)
+        conditions.append("qc_date <= %s")
+        params.append(date_to)
     if instrument_serial_number:
-        q = q.eq("instrument_serial_number", instrument_serial_number)
+        conditions.append("instrument_serial_number = %s")
+        params.append(instrument_serial_number)
     elif lab_group:
         serials = _serials_in_group(lab_group)
-        # 無對應 S/N 時回傳空集合（用不存在的值避免撈出全部）
-        q = q.in_("instrument_serial_number", serials or ["__none__"])
+        if serials:
+            placeholders = ", ".join(["%s"] * len(serials))
+            conditions.append(f"instrument_serial_number IN ({placeholders})")
+            params.extend(serials)
+        else:
+            return []
     if test_item:
-        q = q.eq("test_item", test_item)
-    res = q.limit(limit).execute()
-    return res.data
+        conditions.append("test_item = %s")
+        params.append(test_item)
+
+    where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+    sql = f"SELECT * FROM qc_records {where} ORDER BY qc_date DESC, qc_time DESC LIMIT %s"
+    params.append(limit)
+    return db.fetch_all(sql, tuple(params))
 
 
 @app.post("/api/records")
 def create_record(rec: QCRecordIn):
     z = _compute_z(rec.qc_result_value, rec.lot_mean, rec.lot_standard_deviation)
 
-    # 取得同一台儀器(以 S/N 區分主備機) / 項目 / 濃度的歷史 z-score 做多規則判讀
-    history = (
-        supabase.table(TABLE)
-        .select("z_score, qc_date, qc_time")
-        .eq("instrument_serial_number", rec.instrument_serial_number)
-        .eq("test_item", rec.test_item)
-        .eq("qc_level", rec.qc_level)
-        .order("qc_date")
-        .order("qc_time")
-        .execute()
-        .data
+    history = db.fetch_all(
+        "SELECT z_score, qc_date, qc_time FROM qc_records "
+        "WHERE instrument_serial_number = %s AND test_item = %s AND qc_level = %s "
+        "ORDER BY qc_date, qc_time",
+        (rec.instrument_serial_number, rec.test_item, rec.qc_level),
     )
     z_series = [h["z_score"] for h in history if h["z_score"] is not None]
     if z is not None:
@@ -191,16 +183,16 @@ def create_record(rec: QCRecordIn):
             "Within acceptable range" if status == "Pass" else f"Westgard 違規: {violation}"
         )
 
-    res = supabase.table(TABLE).insert(payload).execute()
-    if not res.data:
+    row = db.insert_returning("qc_records", payload)
+    if not row:
         raise HTTPException(status_code=500, detail="新增失敗")
-    return res.data[0]
+    return row
 
 
 @app.get("/api/dashboard")
 def dashboard(target_date: str | None = Query(None, description="預設今天")):
     day = target_date or _today_str()
-    rows = supabase.table(TABLE).select("*").eq("qc_date", day).execute().data
+    rows = db.fetch_all("SELECT * FROM qc_records WHERE qc_date = %s", (day,))
 
     total = len(rows)
     failed = [r for r in rows if r["qc_status"] == "Fail"]
@@ -210,7 +202,6 @@ def dashboard(target_date: str | None = Query(None, description="預設今天"))
 
     pass_rate = round(len(passed) / total * 100, 1) if total else 0.0
 
-    # 各儀器統計
     by_instrument: dict[str, dict] = {}
     for r in rows:
         name = r["instrument_name"]
@@ -219,7 +210,6 @@ def dashboard(target_date: str | None = Query(None, description="預設今天"))
         if r["qc_status"] == "Fail":
             d["fail"] += 1
 
-    # 違規規則次數統計
     rule_counts: dict[str, int] = {}
     for r in westgard_violations:
         for rule in str(r["westgard_rule_violation"]).split(","):
@@ -269,7 +259,6 @@ def _load_guide() -> str:
 
 
 def _format_records_for_ai(rows: list[dict]) -> str:
-    """把品管紀錄整理成精簡的 Markdown 表格給模型判讀。"""
     header = (
         "| 日期 | 時間 | 儀器 | S/N | 項目 | 濃度 | 結果 | 單位 | 均值 | SD | Z-score | 狀態 | Westgard |\n"
         "|------|------|------|-----|------|------|------|------|------|----|---------|------|----------|\n"
@@ -295,25 +284,37 @@ def ai_interpret(req: AIInterpretIn):
             detail="尚未設定 ANTHROPIC_API_KEY，請於 backend/.env 填入 Anthropic API 金鑰後重啟伺服器。",
         )
 
-    # 1. 從 Supabase 提取所選資料
-    q = supabase.table(TABLE).select("*").order("qc_date").order("qc_time")
+    conditions = []
+    params: list = []
+
     if req.date_from:
-        q = q.gte("qc_date", req.date_from)
+        conditions.append("qc_date >= %s")
+        params.append(req.date_from)
     if req.date_to:
-        q = q.lte("qc_date", req.date_to)
+        conditions.append("qc_date <= %s")
+        params.append(req.date_to)
     if req.instrument_serial_number:
-        q = q.eq("instrument_serial_number", req.instrument_serial_number)
+        conditions.append("instrument_serial_number = %s")
+        params.append(req.instrument_serial_number)
     elif req.lab_group:
         serials = _serials_in_group(req.lab_group)
-        q = q.in_("instrument_serial_number", serials or ["__none__"])
+        if serials:
+            placeholders = ", ".join(["%s"] * len(serials))
+            conditions.append(f"instrument_serial_number IN ({placeholders})")
+            params.extend(serials)
+        else:
+            raise HTTPException(status_code=404, detail="此條件下查無品管資料，無法判讀。")
     if req.test_item:
-        q = q.eq("test_item", req.test_item)
-    rows = q.limit(1000).execute().data
+        conditions.append("test_item = %s")
+        params.append(req.test_item)
+
+    where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+    sql = f"SELECT * FROM qc_records {where} ORDER BY qc_date, qc_time LIMIT 1000"
+    rows = db.fetch_all(sql, tuple(params))
 
     if not rows:
         raise HTTPException(status_code=404, detail="此條件下查無品管資料，無法判讀。")
 
-    # 2. 組裝提示並呼叫 Claude
     guide = _load_guide()
     scope = (
         f"組別: {req.lab_group or '全部'}｜儀器 S/N: {req.instrument_serial_number or '全部'}｜"
