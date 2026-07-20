@@ -9,22 +9,56 @@
 <body>
   <header class="topbar">
     <div class="brand">
+      <button id="sidebar-toggle" class="icon-btn" title="收合選單">☰</button>
       <span class="logo">🧪</span>
       <div>
         <h1>QAQC 品管管理系統</h1>
         <p class="subtitle">Laboratory Quality Control · Westgard Rules</p>
       </div>
     </div>
-    <nav class="tabs">
-      <button class="tab active" data-view="dashboard">儀表板</button>
-      <button class="tab" data-view="records">品管紀錄</button>
-      <button class="tab" data-view="lj">L-J Chart</button>
-      <button class="tab" data-view="ai">AI 判讀</button>
-      <button class="tab" data-view="add">新增品管</button>
-    </nav>
+    <div class="topbar-right">
+      <label class="theme-switch" title="切換亮 / 暗色模式">
+        <span class="theme-icon">🌙</span>
+        <input type="checkbox" id="theme-toggle" />
+        <span class="slider"></span>
+        <span class="theme-icon">☀️</span>
+      </label>
+    </div>
   </header>
 
-  <main>
+  <div class="layout">
+    <!-- ============ 側邊選單 ============ -->
+    <aside id="sidebar" class="sidebar">
+      <nav>
+        <button class="nav-link single active" data-view="dashboard">📊 儀表板</button>
+
+        <div class="nav-group open">
+          <button class="nav-group-title">➕ 新增 <span class="chev">▾</span></button>
+          <div class="nav-sub">
+            <button class="nav-link" data-view="add-instrument">新增儀器</button>
+            <button class="nav-link" data-view="add-item">新增檢驗項目</button>
+            <button class="nav-link" data-view="add-reagent">新增試劑</button>
+            <button class="nav-link" data-view="add-reagent-qc">新增品管液</button>
+            <button class="nav-link" data-view="add-specimen">新增檢體類別</button>
+            <button class="nav-link" data-view="add">新增品管紀錄</button>
+          </div>
+        </div>
+
+        <div class="nav-group open">
+          <button class="nav-group-title">🗂️ 管理 <span class="chev">▾</span></button>
+          <div class="nav-sub">
+            <button class="nav-link" data-view="lj">查看 L-J chart</button>
+            <button class="nav-link" data-view="ai">AI 判讀 <span class="dev-tag">開發中</span></button>
+            <button class="nav-link disabled" disabled>品管預警 <span class="dev-tag">開發中</span></button>
+          </div>
+        </div>
+
+        <button class="nav-link single" data-view="records">📋 品管紀錄</button>
+        <button class="nav-link single disabled" disabled>⚙️ 設定</button>
+      </nav>
+    </aside>
+
+    <main>
     <!-- ============ Dashboard ============ -->
     <section id="view-dashboard" class="view active">
       <div class="view-head">
@@ -110,7 +144,7 @@
         <table id="records-table">
           <thead>
             <tr>
-              <th>日期</th><th>時間</th><th>儀器</th><th>科別</th><th>項目</th>
+              <th>日期</th><th>時間</th><th>儀器</th><th>項目</th>
               <th>濃度</th><th>結果</th><th>單位</th><th>均值</th><th>SD</th>
               <th>Z-score</th><th>狀態</th><th>Westgard</th>
             </tr>
@@ -193,14 +227,13 @@
       <div id="ai-result" class="ai-result"></div>
     </section>
 
-    <!-- ============ Add ============ -->
+    <!-- ============ 新增品管紀錄 ============ -->
     <section id="view-add" class="view">
       <div class="view-head"><h2>新增品管結果</h2></div>
       <form id="add-form" class="form-grid">
         <input type="hidden" name="instrument_name" id="add-instrument-name" />
         <label>組別*<select id="add-group" required></select></label>
         <label>儀器 (S/N)*<select id="add-instrument" name="instrument_serial_number" required></select></label>
-        <label>科別<input name="department" id="add-department" readonly /></label>
         <label>操作者<input name="operator" value="MT001" /></label>
         <label>品管日期*<input type="date" name="qc_date" required /></label>
         <label>品管時間*<input type="time" step="1" name="qc_time" required /></label>
@@ -220,8 +253,175 @@
           <span id="add-msg" class="add-msg"></span>
         </div>
       </form>
+      <div class="panel json-import">
+        <h3>以 JSON 匯入品管紀錄</h3>
+        <p class="json-hint">支援單筆物件或多筆陣列 <code>[{...}, {...}]</code>，格式見輸入框提示。</p>
+        <textarea id="json-record" rows="9" spellcheck="false"></textarea>
+        <div class="json-actions">
+          <span id="json-record-msg" class="add-msg"></span>
+          <button type="button" class="btn-sm ghost" id="json-record-copy">複製 JSON 模板</button>
+          <button type="button" class="btn-sm" id="json-record-submit">提交</button>
+        </div>
+      </div>
     </section>
-  </main>
+
+    <!-- ============ 新增儀器 ============ -->
+    <section id="view-add-instrument" class="view">
+      <div class="view-head"><h2>新增儀器</h2></div>
+      <form id="add-instrument-form" class="form-grid">
+        <label>儀器序號 (S/N)*<input name="serial_number" required placeholder="如 43056" /></label>
+        <label>儀器名稱*<input name="instrument_name" required placeholder="如 Sysmex XN-3000-A" /></label>
+        <label>組別*<select name="group_name" id="reg-inst-group" required></select></label>
+        <label>主 / 備機*
+          <select name="machine_role" required>
+            <option value="主機">主機</option>
+            <option value="備機">備機</option>
+          </select>
+        </label>
+        <div class="form-actions full">
+          <button type="submit" class="btn">新增儀器</button>
+          <span id="add-instrument-msg" class="add-msg"></span>
+        </div>
+      </form>
+      <div class="panel json-import">
+        <h3>以 JSON 匯入儀器</h3>
+        <p class="json-hint">支援單筆物件或多筆陣列 <code>[{...}, {...}]</code>，格式見輸入框提示。</p>
+        <textarea id="json-inst" rows="8" spellcheck="false"></textarea>
+        <div class="json-actions">
+          <span id="json-inst-msg" class="add-msg"></span>
+          <button type="button" class="btn-sm ghost" id="json-inst-copy">複製 JSON 模板</button>
+          <button type="button" class="btn-sm" id="json-inst-submit">提交</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ 新增檢驗項目 ============ -->
+    <section id="view-add-item" class="view">
+      <div class="view-head"><h2>新增檢驗項目</h2></div>
+      <form id="add-item-form" class="form-grid">
+        <label>組別*<select id="reg-item-group" required></select></label>
+        <label>儀器 (S/N)*<select name="instrument_serial_number" id="reg-item-instrument" required></select></label>
+        <label>項目代碼*<input name="item_code" required placeholder="如 RBC / HGB / NEUT%" /></label>
+        <label>項目全名<input name="item_name" placeholder="如 Red Blood Cell Count" /></label>
+        <label>單位<input name="unit" placeholder="如 10^3/uL" /></label>
+        <label>排序<input type="number" name="sort_order" value="0" /></label>
+        <div class="form-actions full">
+          <button type="submit" class="btn">新增項目</button>
+          <span id="add-item-msg" class="add-msg"></span>
+        </div>
+      </form>
+      <div class="panel json-import">
+        <h3>以 JSON 匯入檢驗項目</h3>
+        <p class="json-hint">支援單筆物件或多筆陣列 <code>[{...}, {...}]</code>，格式見輸入框提示。</p>
+        <textarea id="json-item" rows="8" spellcheck="false"></textarea>
+        <div class="json-actions">
+          <span id="json-item-msg" class="add-msg"></span>
+          <button type="button" class="btn-sm ghost" id="json-item-copy">複製 JSON 模板</button>
+          <button type="button" class="btn-sm" id="json-item-submit">提交</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ 新增試劑 ============ -->
+    <section id="view-add-reagent" class="view">
+      <div class="view-head"><h2>新增試劑</h2></div>
+      <form id="add-reagent-form" class="form-grid">
+        <label>組別*<select id="reg-reagent-group" required></select></label>
+        <label>儀器 (S/N)*<select name="instrument_serial_number" id="reg-reagent-instrument" required></select></label>
+        <label>對應檢驗項目*<select name="test_item" id="reg-reagent-item" required></select></label>
+        <label>試劑名稱*<input name="reagent_name" required placeholder="如 Fluorocell WNR" /></label>
+        <label>試劑批號*<input name="lot_number" required /></label>
+        <label>廠商<input name="manufacturer" /></label>
+        <label>效期<input type="date" name="expiry_date" /></label>
+        <label class="check-label"><input type="checkbox" name="in_stock" />已入庫</label>
+        <label>入庫日期<input type="date" name="in_stock_date" /></label>
+        <label class="check-label"><input type="checkbox" name="parallel_test_done" />已完成試劑平測</label>
+        <label>平測完成日期<input type="date" name="parallel_test_date" /></label>
+        <label class="check-label"><input type="checkbox" name="same_lot_as_previous" />與上一批同批號</label>
+        <label>上一個批號<input name="previous_lot_number" /></label>
+        <fieldset class="full check-group">
+          <legend>可操作的檢體類別（可複選）</legend>
+          <div id="reg-reagent-specimens" class="check-row"></div>
+        </fieldset>
+        <label class="full">備註<input name="remark" /></label>
+        <div class="form-actions full">
+          <button type="submit" class="btn">新增試劑</button>
+          <span id="add-reagent-msg" class="add-msg"></span>
+        </div>
+      </form>
+      <div class="panel json-import">
+        <h3>以 JSON 匯入試劑</h3>
+        <p class="json-hint">支援單筆物件或多筆陣列 <code>[{...}, {...}]</code>，格式見輸入框提示。</p>
+        <textarea id="json-reagent" rows="10" spellcheck="false"></textarea>
+        <div class="json-actions">
+          <span id="json-reagent-msg" class="add-msg"></span>
+          <button type="button" class="btn-sm ghost" id="json-reagent-copy">複製 JSON 模板</button>
+          <button type="button" class="btn-sm" id="json-reagent-submit">提交</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ 新增品管液 ============ -->
+    <section id="view-add-reagent-qc" class="view">
+      <div class="view-head"><h2>新增品管液</h2></div>
+      <form id="add-reagent-qc-form" class="form-grid">
+        <label>組別*<select id="reg-rqc-group" required></select></label>
+        <label>儀器 (S/N)*<select name="instrument_serial_number" id="reg-rqc-instrument" required></select></label>
+        <label>檢體類別*<select name="specimen_type_code" id="reg-rqc-specimen" required></select></label>
+        <label>檢驗項目*<input name="test_item" required placeholder="如 Na / CBC" /></label>
+        <label>項目全名<input name="test_item_full_name" /></label>
+        <label>濃度 (Level)*<input name="qc_level" required placeholder="如 Level 1" /></label>
+        <label>品管液批號*<input name="qc_lot_number" required /></label>
+        <label>單位<input name="unit" /></label>
+        <label>原廠均值 (Mean)<input type="number" step="any" name="manufacturer_mean" /></label>
+        <label>原廠標準差 (SD)<input type="number" step="any" name="manufacturer_sd" /></label>
+        <label class="check-label"><input type="checkbox" name="parallel_test_done" />已完成平行測試</label>
+        <label>平測完成日期<input type="date" name="parallel_test_date" /></label>
+        <label>平測後新均值<input type="number" step="any" name="new_standard_mean" /></label>
+        <label>平測後新 SD<input type="number" step="any" name="new_standard_sd" /></label>
+        <label class="check-label"><input type="checkbox" name="in_use" checked />目前使用中</label>
+        <label class="full">備註<input name="remark" /></label>
+        <div class="form-actions full">
+          <button type="submit" class="btn">新增品管液</button>
+          <span id="add-reagent-qc-msg" class="add-msg"></span>
+        </div>
+      </form>
+      <div class="panel json-import">
+        <h3>以 JSON 匯入品管液</h3>
+        <p class="json-hint">支援單筆物件或多筆陣列 <code>[{...}, {...}]</code>，格式見輸入框提示。</p>
+        <textarea id="json-rqc" rows="10" spellcheck="false"></textarea>
+        <div class="json-actions">
+          <span id="json-rqc-msg" class="add-msg"></span>
+          <button type="button" class="btn-sm ghost" id="json-rqc-copy">複製 JSON 模板</button>
+          <button type="button" class="btn-sm" id="json-rqc-submit">提交</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ 新增檢體類別 ============ -->
+    <section id="view-add-specimen" class="view">
+      <div class="view-head"><h2>新增檢體類別</h2></div>
+      <form id="add-specimen-form" class="form-grid">
+        <label>檢體代碼*<input name="code" required placeholder="如 B / U / CSF" /></label>
+        <label>檢體名稱*<input name="name" required placeholder="如 BLOOD / URINE" /></label>
+        <label class="full">說明<input name="description" placeholder="如 全血 / 血清 / 血漿" /></label>
+        <div class="form-actions full">
+          <button type="submit" class="btn">新增檢體類別</button>
+          <span id="add-specimen-msg" class="add-msg"></span>
+        </div>
+      </form>
+      <div class="panel" style="margin-top:18px">
+        <h3>現有檢體類別</h3>
+        <div class="table-wrap">
+          <table id="specimen-table">
+            <thead><tr><th>代碼</th><th>名稱</th><th>說明</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+    </main>
+  </div>
 
   <script src="app.js"></script>
 </body>

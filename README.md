@@ -89,6 +89,7 @@ uv run uvicorn main:app --host 127.0.0.1 --port 8000 --reload
 
 ## 資料庫 Schema
 
-含儀器、科別、檢驗項目、品管濃度 / 批號、結果值、批號均值 / SD、可接受範圍、
-z-score、品管狀態（Pass / Warning / Fail）、Westgard 違規規則、備註等欄位。
-詳見 [backend/init_db.sql](backend/init_db.sql)。
+關聯式架構：`lab_group`（組別）→ `instruments`（儀器）→ `reagent` / `reagent_qc`（試劑 / 品管液）→ `qc_records`（品管紀錄），主檔皆以 UUID 為主鍵。
+
+- 建表語法：[backend/init_db.sql](backend/init_db.sql)
+- 逐表 / 逐欄說明與問題排查：[backend/schema_readme.md](backend/schema_readme.md)

@@ -30,3 +30,6 @@ __pycache__/
 # 測試產出
 *.png
 !frontend/**/*.png
+
+# Excel 原始檔案
+backend/*.xlsx

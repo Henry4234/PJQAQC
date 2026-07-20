@@ -19,6 +19,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 import database as db
+import register
 import westgard
 
 load_dotenv()
@@ -31,6 +32,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# 新增（register）相關 API：儀器 / 項目 / 試劑 / 品管液 / 關聯
+app.include_router(register.router)
 
 # AI 判讀設定
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
@@ -71,8 +75,11 @@ def _today_str() -> str:
 
 
 def _serials_in_group(lab_group: str) -> list[str]:
+    """以組別名稱查該組所有儀器 S/N（組別改以 lab_group 表關聯）。"""
     rows = db.fetch_all(
-        "SELECT serial_number FROM instruments WHERE lab_group = %s",
+        "SELECT i.serial_number FROM instruments i "
+        "JOIN lab_group g ON i.group_id = g.group_id "
+        "WHERE g.group_name = %s",
         (lab_group,),
     )
     return [r["serial_number"] for r in rows]
@@ -83,8 +90,10 @@ def _serials_in_group(lab_group: str) -> list[str]:
 def list_instruments():
     """回傳儀器主檔，依組別分群，供前端雙層選單使用。"""
     rows = db.fetch_all(
-        "SELECT * FROM instruments WHERE active = TRUE "
-        "ORDER BY lab_group, instrument_name, machine_role"
+        "SELECT i.*, g.group_name AS lab_group "
+        "FROM instruments i JOIN lab_group g ON i.group_id = g.group_id "
+        "WHERE i.active = TRUE "
+        "ORDER BY g.group_name, i.instrument_name, i.machine_role"
     )
     grouped: dict[str, list] = {}
     for r in rows:
@@ -171,6 +180,13 @@ def create_record(rec: QCRecordIn):
     violation = ", ".join(rules) if rules else None
 
     payload = rec.model_dump()
+    # qc_records 已移除 department 欄位，改以 group_id 關聯 lab_group；由儀器帶出所屬組別
+    payload.pop("department", None)
+    inst = db.fetch_one(
+        "SELECT group_id FROM instruments WHERE serial_number = %s",
+        (rec.instrument_serial_number,),
+    )
+    payload["group_id"] = inst["group_id"] if inst else None
     payload.update(
         {
             "z_score": z,

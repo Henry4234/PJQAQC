@@ -1,20 +1,44 @@
 // QAQC 前端邏輯：與 FastAPI 後端 (/api/*) 溝通，渲染儀表板、紀錄、新增表單。
 const API = ""; // 與後端同源；若分開部署可改成 http://localhost:8000
 
-// ---------- Tab 切換 ----------
-const tabs = document.querySelectorAll(".tab");
+// ---------- 側欄選單切換 ----------
+const navLinks = document.querySelectorAll(".nav-link[data-view]");
 const views = document.querySelectorAll(".view");
-tabs.forEach((t) => {
+navLinks.forEach((t) => {
   t.addEventListener("click", () => {
-    tabs.forEach((x) => x.classList.remove("active"));
+    if (t.classList.contains("disabled")) return;
+    navLinks.forEach((x) => x.classList.remove("active"));
     views.forEach((v) => v.classList.remove("active"));
     t.classList.add("active");
     document.getElementById("view-" + t.dataset.view).classList.add("active");
     if (t.dataset.view === "records") loadRecords();
     if (t.dataset.view === "lj") openLJ();
     if (t.dataset.view === "ai") openAI();
+    if (t.dataset.view === "add-specimen") loadSpecimenTable();
   });
 });
+
+// 第一層群組收折
+document.querySelectorAll(".nav-group-title").forEach((btn) => {
+  btn.addEventListener("click", () => btn.parentElement.classList.toggle("open"));
+});
+
+// 整個側欄收合
+document.getElementById("sidebar-toggle").addEventListener("click", () => {
+  document.querySelector(".layout").classList.toggle("sidebar-collapsed");
+});
+
+// ---------- 亮 / 暗色模式 ----------
+const themeToggle = document.getElementById("theme-toggle");
+function applyTheme(theme) {
+  document.documentElement.dataset.theme = theme;
+  themeToggle.checked = theme === "light";
+  localStorage.setItem("qaqc-theme", theme);
+  // L-J chart 以繪圖時的主題色渲染，主題切換後重繪（鉤子於 L-J 區段註冊）
+  if (window.__redrawLJ) window.__redrawLJ();
+}
+themeToggle.addEventListener("change", () => applyTheme(themeToggle.checked ? "light" : "dark"));
+applyTheme(localStorage.getItem("qaqc-theme") || "dark");
 
 const todayStr = () => new Date().toISOString().slice(0, 10);
 
@@ -131,6 +155,21 @@ async function loadInstruments() {
   fillInstrumentSelect("add-instrument", groups[0] || "", false);
   fillInstrumentSelect("lj-instrument", groups[0] || "", false);
   fillInstrumentSelect("ai-instrument", "", true); // 全部
+  // 新增檢驗項目 / 試劑 / 品管液 表單：雙層選單（組別 → 該組儀器）
+  const groupOpts = groups.map((g) => `<option value="${g}">${g}</option>`).join("");
+  [
+    ["reg-item-group", "reg-item-instrument"],
+    ["reg-reagent-group", "reg-reagent-instrument"],
+    ["reg-rqc-group", "reg-rqc-instrument"],
+  ].forEach(([groupId, instId]) => {
+    const sel = document.getElementById(groupId);
+    const prev = sel.value;
+    sel.innerHTML = groupOpts;
+    // 儀器主檔重載後盡量保留原本選的組別
+    if (groups.includes(prev)) sel.value = prev;
+    fillInstrumentSelect(instId, sel.value || groups[0] || "", false);
+  });
+  loadReagentItemOptions();
   syncAddInstrumentMeta();
 }
 
@@ -147,12 +186,11 @@ function fillInstrumentSelect(selectId, group, includeAll) {
   sel.innerHTML = (includeAll ? `<option value="">全部儀器</option>` : "") + opts;
 }
 
-// 新增分頁：依選中的儀器自動帶入 instrument_name 與科別
+// 新增分頁：依選中的儀器自動帶入 instrument_name
 function syncAddInstrumentMeta() {
   const sn = document.getElementById("add-instrument").value;
   const inst = INSTRUMENTS.all.find((i) => i.serial_number === sn);
   document.getElementById("add-instrument-name").value = inst ? inst.instrument_name : "";
-  document.getElementById("add-department").value = inst ? inst.department || "" : "";
 }
 
 // 紀錄分頁：組別變動時連動第二層
@@ -165,6 +203,39 @@ document.getElementById("add-group").addEventListener("change", (e) => {
   syncAddInstrumentMeta();
 });
 document.getElementById("add-instrument").addEventListener("change", syncAddInstrumentMeta);
+// 新增檢驗項目 / 試劑 / 品管液：組別變動時連動儀器選單
+[
+  ["reg-item-group", "reg-item-instrument"],
+  ["reg-reagent-group", "reg-reagent-instrument"],
+  ["reg-rqc-group", "reg-rqc-instrument"],
+].forEach(([groupId, instId]) => {
+  document.getElementById(groupId).addEventListener("change", (e) => {
+    fillInstrumentSelect(instId, e.target.value, false);
+  });
+});
+
+// 新增試劑：第三層選單（儀器 → 該儀器的檢驗項目，來自 items 主檔）
+async function loadReagentItemOptions() {
+  const sn = document.getElementById("reg-reagent-instrument").value;
+  const sel = document.getElementById("reg-reagent-item");
+  if (!sn) {
+    sel.innerHTML = `<option value="" disabled selected>（請先選擇儀器）</option>`;
+    return;
+  }
+  try {
+    const items = await api(`/api/items?instrument_serial_number=${encodeURIComponent(sn)}`);
+    sel.innerHTML = items.length
+      ? items
+          .map((i) => `<option value="${i.item_code}">${i.item_code}${i.item_name ? "（" + i.item_name + "）" : ""}</option>`)
+          .join("")
+      : `<option value="" disabled selected>（此儀器尚無項目，請先新增檢驗項目）</option>`;
+  } catch {
+    sel.innerHTML = `<option value="" disabled selected>（項目載入失敗）</option>`;
+  }
+}
+// 組別 / 儀器變動時重載第三層（組別 listener 先於此註冊，儀器清單已先更新）
+document.getElementById("reg-reagent-group").addEventListener("change", loadReagentItemOptions);
+document.getElementById("reg-reagent-instrument").addEventListener("change", loadReagentItemOptions);
 
 // ---------- Records ----------
 async function loadRecords() {
@@ -183,7 +254,7 @@ async function loadRecords() {
   try {
     const rows = await api("/api/records?" + params.toString());
     if (!rows.length) {
-      tbody.innerHTML = `<tr><td colspan="13" class="empty">無資料</td></tr>`;
+      tbody.innerHTML = `<tr><td colspan="12" class="empty">無資料</td></tr>`;
       return;
     }
     tbody.innerHTML = rows
@@ -191,7 +262,7 @@ async function loadRecords() {
         (r) => `
       <tr>
         <td>${r.qc_date}</td><td>${r.qc_time}</td><td>${r.instrument_name}</td>
-        <td>${r.department ?? ""}</td><td>${r.test_item}</td><td>${r.qc_level ?? ""}</td>
+        <td>${r.test_item}</td><td>${r.qc_level ?? ""}</td>
         <td>${r.qc_result_value ?? ""}</td><td>${r.unit ?? ""}</td>
         <td>${r.lot_mean ?? ""}</td><td>${r.lot_standard_deviation ?? ""}</td>
         <td>${r.z_score ?? ""}</td>
@@ -201,7 +272,7 @@ async function loadRecords() {
       )
       .join("");
   } catch (e) {
-    tbody.innerHTML = `<tr><td colspan="13" class="empty">載入失敗：${e.message}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="12" class="empty">載入失敗：${e.message}</td></tr>`;
   }
 }
 
@@ -216,6 +287,8 @@ document.getElementById("rec-reset").addEventListener("click", () => {
 
 // ---------- Levey-Jennings Chart ----------
 let ljInited = false;
+// 主題切換時重繪（applyTheme 呼叫）
+window.__redrawLJ = () => { if (ljInited) loadLJ(); };
 
 // 載入選定儀器的檢驗項目到 lj-test
 async function loadLJTestItems() {
@@ -315,8 +388,12 @@ function renderLJChart({ testItem, level, unit, mean, sd, points }) {
 
   const svg = el("svg", { viewBox: `0 0 ${W} ${H}`, role: "img" });
 
-  // 背景繪圖區
-  svg.appendChild(el("rect", { x: m.left, y: m.top, width: plotW, height: plotH, fill: "#16202f", stroke: "#334155" }));
+  // 背景繪圖區（顏色跟隨主題）
+  const css = getComputedStyle(document.documentElement);
+  const chartBg = css.getPropertyValue("--chart-bg").trim() || "#16202f";
+  const chartBorder = css.getPropertyValue("--border").trim() || "#334155";
+  const pointStroke = css.getPropertyValue("--chart-point-stroke").trim() || "#0f172a";
+  svg.appendChild(el("rect", { x: m.left, y: m.top, width: plotW, height: plotH, fill: chartBg, stroke: chartBorder }));
 
   // SD 參考線
   const lines = [
@@ -352,7 +429,7 @@ function renderLJChart({ testItem, level, unit, mean, sd, points }) {
   const statusColor = { Pass: "#22c55e", Warning: "#f59e0b", Fail: "#ef4444" };
   points.forEach((p, i) => {
     const cx = xToPx(i), cy = yToPx(p.value);
-    const c = el("circle", { cx, cy, r: 4.5, fill: statusColor[p.status] || "#38bdf8", stroke: "#0f172a", "stroke-width": 1 });
+    const c = el("circle", { cx, cy, r: 4.5, fill: statusColor[p.status] || "#38bdf8", stroke: pointStroke, "stroke-width": 1 });
     c.appendChild(el("title", {}, `${p.date} ${p.time}\n值 ${p.value} ${unit}\nZ=${p.z} ｜ ${p.status}`));
     svg.appendChild(c);
 
@@ -560,6 +637,355 @@ document.getElementById("add-form").addEventListener("submit", async (e) => {
   }
 });
 
+// ---------- 新增主檔（儀器 / 項目 / 試劑 / 品管液 / 檢體類別）----------
+// 共用：FormData → JSON payload；checkboxes 轉布林、numbers 轉數字
+function formPayload(form, { checkboxes = [], numbers = [] } = {}) {
+  const fd = new FormData(form);
+  const payload = {};
+  for (const [k, v] of fd.entries()) {
+    if (v === "") continue;
+    payload[k] = v;
+  }
+  checkboxes.forEach((k) => {
+    payload[k] = form.querySelector(`[name=${k}]`)?.checked ?? false;
+  });
+  numbers.forEach((k) => {
+    if (payload[k] !== undefined) payload[k] = parseFloat(payload[k]);
+  });
+  return payload;
+}
+
+// 共用：送出表單到 register API 並顯示結果
+function bindRegisterForm(formId, msgId, path, options = {}, onSuccess) {
+  document.getElementById(formId).addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const msg = document.getElementById(msgId);
+    msg.className = "add-msg";
+    msg.textContent = "送出中…";
+    try {
+      const payload = formPayload(e.target, options);
+      if (options.transform) options.transform(payload, e.target);
+      const r = await api(path, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      msg.className = "add-msg ok";
+      msg.textContent = "✅ 新增成功！";
+      e.target.reset();
+      if (onSuccess) onSuccess(r);
+    } catch (err) {
+      msg.className = "add-msg err";
+      // 後端錯誤格式為 {"detail": "..."}，嘗試取出可讀訊息
+      let text = err.message;
+      try { text = JSON.parse(err.message).detail || text; } catch {}
+      msg.textContent = "❌ 失敗：" + text;
+    }
+  });
+}
+
+// 組別選單（新增儀器表單）
+async function loadLabGroupOptions() {
+  const groups = await api("/api/lab-groups");
+  document.getElementById("reg-inst-group").innerHTML = groups
+    .map((g) => `<option value="${g.group_name}">${g.group_name}</option>`)
+    .join("");
+}
+
+// 檢體類別：試劑表單的複選框 + 品管液表單的下拉 + 檢體類別頁的清單表格
+async function loadSpecimenOptions() {
+  const types = await api("/api/specimen-types");
+  document.getElementById("reg-reagent-specimens").innerHTML = types
+    .map((s) => `<label><input type="checkbox" value="${s.code}" />${s.code}（${s.name}）</label>`)
+    .join("");
+  document.getElementById("reg-rqc-specimen").innerHTML = types
+    .map((s) => `<option value="${s.code}">${s.code}（${s.name}）</option>`)
+    .join("");
+}
+
+async function loadSpecimenTable() {
+  const tbody = document.querySelector("#specimen-table tbody");
+  try {
+    const types = await api("/api/specimen-types");
+    tbody.innerHTML = types
+      .map((s) => `<tr><td>${s.code}</td><td>${s.name}</td><td>${s.description ?? ""}</td></tr>`)
+      .join("");
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="3" class="empty">載入失敗：${e.message}</td></tr>`;
+  }
+}
+
+// 1) 新增儀器：成功後重載儀器選單
+bindRegisterForm("add-instrument-form", "add-instrument-msg", "/api/instruments", {}, () => loadInstruments());
+
+// 表單 reset 後組別會跳回第一個選項，儀器選單需跟著重新過濾
+function resyncRegCascade(groupId, instId) {
+  fillInstrumentSelect(instId, document.getElementById(groupId).value, false);
+}
+
+// 2) 新增檢驗項目：成功後同步刷新試劑表單的項目選單
+bindRegisterForm("add-item-form", "add-item-msg", "/api/items", { numbers: ["sort_order"] },
+  () => { resyncRegCascade("reg-item-group", "reg-item-instrument"); loadReagentItemOptions(); });
+
+// 3) 新增試劑：勾選的檢體代碼 → specimen_type_codes
+bindRegisterForm(
+  "add-reagent-form",
+  "add-reagent-msg",
+  "/api/reagents",
+  {
+    checkboxes: ["in_stock", "parallel_test_done", "same_lot_as_previous"],
+    transform(payload, form) {
+      payload.specimen_type_codes = [...form.querySelectorAll("#reg-reagent-specimens input:checked")]
+        .map((c) => c.value);
+    },
+  },
+  () => { resyncRegCascade("reg-reagent-group", "reg-reagent-instrument"); loadReagentItemOptions(); }
+);
+
+// 4) 新增品管液
+bindRegisterForm("add-reagent-qc-form", "add-reagent-qc-msg", "/api/reagent-qc", {
+  checkboxes: ["parallel_test_done", "in_use"],
+  numbers: ["manufacturer_mean", "manufacturer_sd", "new_standard_mean", "new_standard_sd"],
+}, () => resyncRegCascade("reg-rqc-group", "reg-rqc-instrument"));
+
+// 5) 新增檢體類別：成功後刷新選項與清單
+bindRegisterForm("add-specimen-form", "add-specimen-msg", "/api/specimen-types", {}, () => {
+  loadSpecimenOptions();
+  loadSpecimenTable();
+});
+
+// ---------- JSON 匯入 ----------
+// 各頁面的 API 路徑、欄位格式（[型別, 是否必填]）與模板；模板同時作為輸入框提示
+const JSON_IMPORTS = {
+  inst: {
+    path: "/api/instruments",
+    schema: {
+      serial_number: ["string", true],
+      instrument_name: ["string", true],
+      group_name: ["string", true],
+      machine_role: ["string", false],
+    },
+    template: `{
+  "serial_number": "43056",
+  "instrument_name": "Sysmex XN-3000-A",
+  "group_name": "血液組",
+  "machine_role": "主機"
+}`,
+    onSuccess: () => loadInstruments(),
+  },
+  item: {
+    path: "/api/items",
+    schema: {
+      instrument_serial_number: ["string", true],
+      item_code: ["string", true],
+      item_name: ["string", false],
+      unit: ["string", false],
+      sort_order: ["number", false],
+    },
+    template: `[
+  { "instrument_serial_number": "43056", "item_code": "RBC", "item_name": "Red Blood Cell Count", "unit": "10^6/uL", "sort_order": 1 },
+  { "instrument_serial_number": "43056", "item_code": "HGB", "item_name": "Hemoglobin", "unit": "g/dL", "sort_order": 2 }
+]`,
+    onSuccess: () => loadReagentItemOptions(),
+  },
+  reagent: {
+    path: "/api/reagents",
+    schema: {
+      instrument_serial_number: ["string", true],
+      test_item: ["string", true],
+      reagent_name: ["string", true],
+      lot_number: ["string", true],
+      manufacturer: ["string", false],
+      in_stock: ["boolean", false],
+      in_stock_date: ["string", false],
+      parallel_test_done: ["boolean", false],
+      parallel_test_date: ["string", false],
+      same_lot_as_previous: ["boolean", false],
+      previous_lot_number: ["string", false],
+      expiry_date: ["string", false],
+      specimen_type_codes: ["string[]", false],
+      remark: ["string", false],
+    },
+    template: `{
+  "instrument_serial_number": "43056",
+  "test_item": "m-ALB",
+  "reagent_name": "Tina-quant Albumin Gen.2",
+  "lot_number": "LOT-2026A",
+  "manufacturer": "Roche",
+  "in_stock": true,
+  "in_stock_date": "2026-07-01",
+  "parallel_test_done": false,
+  "same_lot_as_previous": false,
+  "expiry_date": "2027-06-30",
+  "specimen_type_codes": ["U", "CSF"],
+  "remark": ""
+}`,
+  },
+  rqc: {
+    path: "/api/reagent-qc",
+    schema: {
+      instrument_serial_number: ["string", true],
+      specimen_type_code: ["string", false],
+      test_item: ["string", true],
+      test_item_full_name: ["string", false],
+      qc_level: ["string", true],
+      qc_lot_number: ["string", true],
+      unit: ["string", false],
+      manufacturer_mean: ["number", false],
+      manufacturer_sd: ["number", false],
+      parallel_test_done: ["boolean", false],
+      parallel_test_date: ["string", false],
+      new_standard_mean: ["number", false],
+      new_standard_sd: ["number", false],
+      in_use: ["boolean", false],
+      remark: ["string", false],
+    },
+    template: `{
+  "instrument_serial_number": "43056",
+  "specimen_type_code": "B",
+  "test_item": "Na",
+  "qc_level": "Level 1",
+  "qc_lot_number": "QC-NA-B1-2026",
+  "unit": "mmol/L",
+  "manufacturer_mean": 140.0,
+  "manufacturer_sd": 2.5,
+  "parallel_test_done": false,
+  "in_use": true
+}`,
+  },
+  record: {
+    path: "/api/records",
+    schema: {
+      instrument_name: ["string", true],
+      instrument_serial_number: ["string", true],
+      qc_date: ["string", true],
+      qc_time: ["string", true],
+      operator: ["string", false],
+      test_item: ["string", true],
+      test_item_full_name: ["string", false],
+      qc_level: ["string", false],
+      qc_lot_number: ["string", false],
+      qc_result_value: ["number", true],
+      unit: ["string", false],
+      lot_mean: ["number", true],
+      lot_standard_deviation: ["number", true],
+      acceptable_range_lower: ["number", false],
+      acceptable_range_upper: ["number", false],
+      remark: ["string", false],
+    },
+    template: `{
+  "instrument_name": "Sysmex XN-3000-A",
+  "instrument_serial_number": "43056",
+  "qc_date": "2026-07-20",
+  "qc_time": "08:30:00",
+  "operator": "MT001",
+  "test_item": "WBC",
+  "qc_level": "Level 1",
+  "qc_lot_number": "QC-WBC-L1-202607",
+  "qc_result_value": 5.21,
+  "unit": "10^3/uL",
+  "lot_mean": 5.00,
+  "lot_standard_deviation": 0.25
+}`,
+    onSuccess: () => loadDashboard(),
+  },
+};
+
+// 逐筆檢查欄位是否符合資料庫要求的格式，回傳錯誤訊息清單
+function validateJsonRow(obj, schema, idx) {
+  const errs = [];
+  if (typeof obj !== "object" || obj === null || Array.isArray(obj)) {
+    return [`第 ${idx} 筆不是 JSON 物件`];
+  }
+  for (const [field, [type, required]] of Object.entries(schema)) {
+    const v = obj[field];
+    if (v === undefined || v === null) {
+      if (required) errs.push(`第 ${idx} 筆缺少必填欄位「${field}」`);
+      continue;
+    }
+    if (type === "string" && typeof v !== "string") errs.push(`第 ${idx} 筆「${field}」應為字串`);
+    if (type === "number" && typeof v !== "number") errs.push(`第 ${idx} 筆「${field}」應為數字`);
+    if (type === "boolean" && typeof v !== "boolean") errs.push(`第 ${idx} 筆「${field}」應為布林值 (true/false)`);
+    if (type === "string[]" && (!Array.isArray(v) || v.some((x) => typeof x !== "string")))
+      errs.push(`第 ${idx} 筆「${field}」應為字串陣列，如 ["U", "CSF"]`);
+  }
+  for (const k of Object.keys(obj)) {
+    if (!(k in schema)) errs.push(`第 ${idx} 筆包含未知欄位「${k}」`);
+  }
+  return errs;
+}
+
+function bindJsonImport(key) {
+  const cfg = JSON_IMPORTS[key];
+  const ta = document.getElementById(`json-${key}`);
+  const msg = document.getElementById(`json-${key}-msg`);
+  ta.placeholder = cfg.template;
+
+  // 複製 JSON 模板（剪貼簿不可用時直接填入輸入框）
+  document.getElementById(`json-${key}-copy`).addEventListener("click", async () => {
+    try {
+      await navigator.clipboard.writeText(cfg.template);
+      msg.className = "add-msg ok";
+      msg.textContent = "已複製模板到剪貼簿";
+    } catch {
+      ta.value = cfg.template;
+      msg.className = "add-msg";
+      msg.textContent = "剪貼簿不可用，已將模板填入輸入框";
+    }
+  });
+
+  // 提交：解析 → 逐筆格式檢查 → 逐筆呼叫 API
+  document.getElementById(`json-${key}-submit`).addEventListener("click", async () => {
+    msg.className = "add-msg";
+    let data;
+    try {
+      data = JSON.parse(ta.value);
+    } catch (e) {
+      msg.className = "add-msg err";
+      msg.textContent = "❌ JSON 解析失敗：" + e.message;
+      return;
+    }
+    const rows = Array.isArray(data) ? data : [data];
+    if (!rows.length) {
+      msg.className = "add-msg err";
+      msg.textContent = "❌ 沒有可匯入的資料";
+      return;
+    }
+
+    const errs = rows.flatMap((r, i) => validateJsonRow(r, cfg.schema, i + 1));
+    if (errs.length) {
+      msg.className = "add-msg err";
+      msg.textContent = "❌ 格式檢查未通過：" + errs.slice(0, 3).join("；") + (errs.length > 3 ? ` …（共 ${errs.length} 項）` : "");
+      return;
+    }
+
+    msg.textContent = `匯入中…（共 ${rows.length} 筆）`;
+    let done = 0;
+    for (const [i, row] of rows.entries()) {
+      try {
+        await api(cfg.path, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(row),
+        });
+        done++;
+      } catch (err) {
+        let text = err.message;
+        try { text = JSON.parse(err.message).detail || text; } catch {}
+        msg.className = "add-msg err";
+        msg.textContent = `❌ 已匯入 ${done} 筆，第 ${i + 1} 筆失敗：${text}`;
+        if (cfg.onSuccess && done) cfg.onSuccess();
+        return;
+      }
+    }
+    msg.className = "add-msg ok";
+    msg.textContent = `✅ 成功匯入 ${done} 筆`;
+    ta.value = "";
+    if (cfg.onSuccess) cfg.onSuccess();
+  });
+}
+Object.keys(JSON_IMPORTS).forEach(bindJsonImport);
+
 // ---------- 初始化 ----------
 (async function init() {
   const t = todayStr();
@@ -574,5 +1000,7 @@ document.getElementById("add-form").addEventListener("submit", async (e) => {
   const qd = document.querySelector('#add-form [name=qc_date]');
   if (qd) qd.value = t;
   await loadInstruments();
+  loadLabGroupOptions();
+  loadSpecimenOptions();
   loadDashboard();
 })();
