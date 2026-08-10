@@ -48,6 +48,10 @@
           <button class="nav-group-title">🗂️ 管理 <span class="chev">▾</span></button>
           <div class="nav-sub">
             <button class="nav-link" data-view="lj">查看 L-J chart</button>
+            <button class="nav-link" data-view="er">主檔關聯圖</button>
+            <button class="nav-link" data-view="mg-item">管理檢驗項目</button>
+            <button class="nav-link" data-view="mg-reagent">管理試劑</button>
+            <button class="nav-link" data-view="mg-rqc">管理品管液</button>
             <button class="nav-link" data-view="ai">AI 判讀 <span class="dev-tag">開發中</span></button>
             <button class="nav-link disabled" disabled>品管預警 <span class="dev-tag">開發中</span></button>
           </div>
@@ -193,6 +197,143 @@
       </div>
       <div id="lj-charts"></div>
     </section>
+
+    <!-- ============ 主檔關聯圖 (互動式 ER) ============ -->
+    <section id="view-er" class="view">
+      <div class="view-head">
+        <h2>主檔關聯圖</h2>
+      </div>
+      <div class="filter-bar">
+        <div class="filter-item">
+          <label>組別</label>
+          <select id="er-group"></select>
+        </div>
+        <div class="filter-item">
+          <label>儀器 (S/N)</label>
+          <select id="er-instrument"></select>
+        </div>
+        <button id="er-refresh" class="btn-sm">重新載入</button>
+        <button id="er-reset" class="btn-sm ghost">清除選取</button>
+      </div>
+
+      <div class="er-legend">
+        <span><i class="er-dot t-inst"></i>儀器</span>
+        <span><i class="er-dot t-qc"></i>品管液</span>
+        <span><i class="er-dot t-reagent"></i>試劑</span>
+        <span><i class="er-dot t-item"></i>檢驗項目</span>
+        <span class="er-legend-tip">點擊任一卡片可高亮其關聯路徑，再點一次或按「清除選取」還原</span>
+      </div>
+
+      <div class="er-stats" id="er-stats"></div>
+
+      <div class="er-layout" id="er-layout">
+        <div class="er-wrap">
+          <div class="er-canvas" id="er-canvas">
+            <svg class="er-edges" id="er-edges"></svg>
+            <div class="er-columns" id="er-columns"></div>
+          </div>
+        </div>
+        <aside class="er-detail-panel" id="er-detail-panel">
+          <div class="er-detail-head">
+            <h3>詳細資料</h3>
+            <button type="button" class="icon-btn er-collapse" id="er-detail-toggle" title="收合面板">›</button>
+          </div>
+          <div class="er-detail" id="er-detail"></div>
+        </aside>
+        <button type="button" class="er-detail-open" id="er-detail-open" title="展開詳細資料">‹</button>
+      </div>
+    </section>
+
+    <!-- ============ 管理檢驗項目 ============ -->
+    <section id="view-mg-item" class="view">
+      <div class="view-head"><h2>管理檢驗項目</h2></div>
+      <div class="filter-bar">
+        <div class="filter-item">
+          <label>組別</label>
+          <select id="mg-item-group"></select>
+        </div>
+        <div class="filter-item">
+          <label>儀器 (S/N)</label>
+          <select id="mg-item-instrument"></select>
+        </div>
+        <button id="mg-item-refresh" class="btn-sm">查詢</button>
+        <span id="mg-item-msg" class="add-msg"></span>
+      </div>
+      <div class="table-wrap">
+        <table id="mg-item-table">
+          <thead>
+            <tr><th>項目代碼</th><th>項目全名</th><th>單位</th><th>排序</th><th>狀態</th><th>操作</th></tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- ============ 管理試劑 ============ -->
+    <section id="view-mg-reagent" class="view">
+      <div class="view-head"><h2>管理試劑</h2></div>
+      <div class="filter-bar">
+        <div class="filter-item">
+          <label>組別</label>
+          <select id="mg-reagent-group"></select>
+        </div>
+        <div class="filter-item">
+          <label>儀器 (S/N)</label>
+          <select id="mg-reagent-instrument"></select>
+        </div>
+        <button id="mg-reagent-refresh" class="btn-sm">查詢</button>
+        <span id="mg-reagent-msg" class="add-msg"></span>
+      </div>
+      <div class="table-wrap">
+        <table id="mg-reagent-table">
+          <thead>
+            <tr><th>試劑名稱</th><th>批號</th><th>對應項目</th><th>檢體</th><th>入庫</th><th>平測</th><th>效期</th><th>狀態</th><th>操作</th></tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- ============ 管理品管液 ============ -->
+    <section id="view-mg-rqc" class="view">
+      <div class="view-head"><h2>管理品管液</h2></div>
+      <div class="filter-bar">
+        <div class="filter-item">
+          <label>組別</label>
+          <select id="mg-rqc-group"></select>
+        </div>
+        <div class="filter-item">
+          <label>儀器 (S/N)</label>
+          <select id="mg-rqc-instrument"></select>
+        </div>
+        <button id="mg-rqc-refresh" class="btn-sm">查詢</button>
+        <span id="mg-rqc-msg" class="add-msg"></span>
+      </div>
+      <div class="table-wrap">
+        <table id="mg-rqc-table">
+          <thead>
+            <tr><th>檢驗項目</th><th>濃度</th><th>批號</th><th>檢體</th><th>Mean / SD</th><th>平測</th><th>使用中</th><th>狀態</th><th>操作</th></tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- ============ 編輯對話框（三個管理頁共用）============ -->
+    <div class="modal-backdrop" id="edit-modal">
+      <div class="modal">
+        <div class="modal-head">
+          <h3 id="edit-modal-title">編輯</h3>
+          <button type="button" class="icon-btn" id="edit-modal-close">✕</button>
+        </div>
+        <form id="edit-form" class="form-grid modal-body"></form>
+        <div class="modal-foot">
+          <span id="edit-modal-msg" class="add-msg"></span>
+          <button type="button" class="btn-sm ghost" id="edit-modal-cancel">取消</button>
+          <button type="button" class="btn-sm" id="edit-modal-save">儲存變更</button>
+        </div>
+      </div>
+    </div>
 
     <!-- ============ AI 判讀 ============ -->
     <section id="view-ai" class="view">

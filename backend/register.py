@@ -201,14 +201,19 @@ def create_items_batch(inp: ItemBatchIn):
 
 
 @router.get("/items", summary="項目清單（可依儀器過濾）")
-def list_items(instrument_serial_number: str | None = Query(None)):
+def list_items(
+    instrument_serial_number: str | None = Query(None),
+    include_inactive: bool = Query(False, description="管理頁需一併列出已停用者"),
+):
+    cond = "" if include_inactive else " AND active = TRUE"
     if instrument_serial_number:
         return db.fetch_all(
-            "SELECT * FROM items WHERE instrument_serial_number = %s AND active = TRUE "
+            f"SELECT * FROM items WHERE instrument_serial_number = %s{cond} "
             "ORDER BY sort_order, item_code",
             (instrument_serial_number,),
         )
-    return db.fetch_all("SELECT * FROM items WHERE active = TRUE ORDER BY instrument_serial_number, sort_order")
+    where = "" if include_inactive else "WHERE active = TRUE "
+    return db.fetch_all(f"SELECT * FROM items {where}ORDER BY instrument_serial_number, sort_order")
 
 
 # ============================ 4. 檢體類別 specimen_type ============================ #
@@ -275,13 +280,16 @@ def create_reagent(inp: ReagentIn):
 
 
 @router.get("/reagents", summary="試劑清單（可依儀器過濾，含可操作檢體代碼）")
-def list_reagents(instrument_serial_number: str | None = Query(None)):
+def list_reagents(
+    instrument_serial_number: str | None = Query(None),
+    include_inactive: bool = Query(False, description="管理頁需一併列出已停用者"),
+):
     sql = (
         "SELECT r.*, GROUP_CONCAT(s.code ORDER BY s.code) AS specimen_type_codes "
         "FROM reagent r "
         "LEFT JOIN reagent_specimen_map m ON m.reagent_id = r.reagent_id "
         "LEFT JOIN specimen_type s ON s.specimen_type_id = m.specimen_type_id "
-        "WHERE r.active = TRUE "
+        "WHERE " + ("1=1 " if include_inactive else "r.active = TRUE ")
     )
     params: tuple = ()
     if instrument_serial_number:
@@ -336,12 +344,13 @@ def create_reagent_qc(inp: ReagentQCIn):
 def list_reagent_qc(
     instrument_serial_number: str | None = Query(None),
     specimen_type_code: str | None = Query(None, description="檢體代碼，如 B / U / CSF"),
+    include_inactive: bool = Query(False, description="管理頁需一併列出已停用者"),
 ):
     sql = (
         "SELECT q.*, s.code AS specimen_type_code, s.name AS specimen_type_name "
         "FROM reagent_qc q "
         "LEFT JOIN specimen_type s ON s.specimen_type_id = q.specimen_type_id "
-        "WHERE q.active = TRUE "
+        "WHERE " + ("1=1 " if include_inactive else "q.active = TRUE ")
     )
     params: list = []
     if instrument_serial_number:

@@ -13,8 +13,10 @@ navLinks.forEach((t) => {
     document.getElementById("view-" + t.dataset.view).classList.add("active");
     if (t.dataset.view === "records") loadRecords();
     if (t.dataset.view === "lj") openLJ();
+    if (t.dataset.view === "er") openER();
     if (t.dataset.view === "ai") openAI();
     if (t.dataset.view === "add-specimen") loadSpecimenTable();
+    if (t.dataset.view.startsWith("mg-")) openManage(t.dataset.view);
   });
 });
 
@@ -144,6 +146,15 @@ async function loadInstruments() {
   // L-J 分頁：組別選單（不含「全部」，需指定單一儀器）
   const ljGroup = document.getElementById("lj-group");
   ljGroup.innerHTML = groups.map((g) => `<option value="${g}">${g}</option>`).join("");
+
+  // 關聯圖 / 三個管理頁：組別選單（需指定單一儀器）
+  ["er-group", "mg-item-group", "mg-reagent-group", "mg-rqc-group"].forEach((gid) => {
+    const sel = document.getElementById(gid);
+    const prev = sel.value;
+    sel.innerHTML = groups.map((g) => `<option value="${g}">${g}</option>`).join("");
+    if (groups.includes(prev)) sel.value = prev;
+    fillInstrumentSelect(gid.replace("-group", "-instrument"), sel.value || groups[0] || "", false);
+  });
 
   // AI 分頁：組別選單（含「全部組別」）
   const aiGroup = document.getElementById("ai-group");
@@ -695,6 +706,7 @@ async function loadLabGroupOptions() {
 // 檢體類別：試劑表單的複選框 + 品管液表單的下拉 + 檢體類別頁的清單表格
 async function loadSpecimenOptions() {
   const types = await api("/api/specimen-types");
+  SPECIMEN_TYPES = types; // 管理頁編輯對話框共用
   document.getElementById("reg-reagent-specimens").innerHTML = types
     .map((s) => `<label><input type="checkbox" value="${s.code}" />${s.code}（${s.name}）</label>`)
     .join("");
@@ -753,6 +765,554 @@ bindRegisterForm("add-specimen-form", "add-specimen-msg", "/api/specimen-types",
   loadSpecimenOptions();
   loadSpecimenTable();
 });
+
+// ---------- 主檔關聯圖（互動式 ER）----------
+let erInited = false;
+let ER = null;          // 後端回傳的關聯資料
+let erSelected = null;  // 目前選取的節點 key
+
+const esc = (s) =>
+  String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+
+async function loadER() {
+  const sn = document.getElementById("er-instrument").value;
+  const cols = document.getElementById("er-columns");
+  const stats = document.getElementById("er-stats");
+  const detail = document.getElementById("er-detail");
+  if (!sn) {
+    cols.innerHTML = `<div class="er-empty">請先選擇儀器</div>`;
+    return;
+  }
+  try {
+    ER = await api(`/api/er-graph?instrument_serial_number=${encodeURIComponent(sn)}`);
+  } catch (e) {
+    cols.innerHTML = `<div class="er-empty">載入失敗：${esc(e.message)}</div>`;
+    return;
+  }
+
+  const c = ER.counts;
+  stats.innerHTML = [
+    `品管液 ${c.reagent_qcs}`,
+    `試劑 ${c.reagents}`,
+    `檢驗項目 ${c.items}`,
+    `品管↔試劑 ${c.qc_reagent_links} 條關聯`,
+    `試劑↔項目 ${c.reagent_item_links} 條關聯`,
+  ].map((t) => `<span class="er-chip">${t}</span>`).join("");
+
+  const i = ER.instrument;
+  const instCard = `
+    <div class="er-node t-inst" data-key="inst:${esc(i.serial_number)}">
+      <div class="er-title">${esc(i.instrument_name)}</div>
+      <div class="er-sub">S/N ${esc(i.serial_number)}<br>${esc(i.lab_group)} · ${esc(i.machine_role)}</div>
+    </div>`;
+
+  const qcCards = ER.reagent_qcs.length
+    ? ER.reagent_qcs.map((q) => `
+      <div class="er-node t-qc" data-key="qc:${esc(q.reagent_qc_id)}">
+        <div class="er-title">${esc(q.test_item)} · ${esc(q.qc_level)}</div>
+        <div class="er-sub">批號 ${esc(q.qc_lot_number)}</div>
+        <div>
+          ${q.specimen_code ? `<span class="er-tag">${esc(q.specimen_code)}</span>` : ""}
+          <span class="er-tag ${q.parallel_test_done ? "ok" : "warn"}">${q.parallel_test_done ? "已平測" : "未平測"}</span>
+          ${q.in_use ? `<span class="er-tag ok">使用中</span>` : ""}
+        </div>
+      </div>`).join("")
+    : `<div class="er-empty">尚無品管液</div>`;
+
+  const reagentCards = ER.reagents.length
+    ? ER.reagents.map((r) => `
+      <div class="er-node t-reagent" data-key="reagent:${esc(r.reagent_id)}">
+        <div class="er-title">${esc(r.reagent_name)}</div>
+        <div class="er-sub">批號 ${esc(r.lot_number)} ｜ 項目 ${esc(r.test_item)}</div>
+        <div>
+          ${(r.specimen_codes || []).map((s) => `<span class="er-tag">${esc(s)}</span>`).join("")}
+          <span class="er-tag ${r.in_stock ? "ok" : "warn"}">${r.in_stock ? "已入庫" : "未入庫"}</span>
+          <span class="er-tag ${r.parallel_test_done ? "ok" : "warn"}">${r.parallel_test_done ? "已平測" : "未平測"}</span>
+        </div>
+      </div>`).join("")
+    : `<div class="er-empty">尚無試劑</div>`;
+
+  const itemCards = ER.items.length
+    ? ER.items.map((it) => `
+      <div class="er-node t-item" data-key="item:${esc(it.item_id)}">
+        <div class="er-title">${esc(it.item_code)}</div>
+        <div class="er-sub">${esc(it.item_name || "")}${it.unit ? " ｜ " + esc(it.unit) : ""}</div>
+      </div>`).join("")
+    : `<div class="er-empty">尚無檢驗項目</div>`;
+
+  cols.innerHTML = `
+    <div class="er-col t-inst"><div class="er-col-head">儀器</div>${instCard}</div>
+    <div class="er-col t-qc"><div class="er-col-head">品管液 (QC)</div>${qcCards}</div>
+    <div class="er-col t-reagent"><div class="er-col-head">試劑</div>${reagentCards}</div>
+    <div class="er-col t-item"><div class="er-col-head">檢驗項目</div>${itemCards}</div>`;
+
+  detail.innerHTML = `<div class="placeholder">點擊卡片查看詳細資料與關聯</div>`;
+  erSelected = null;
+  document.getElementById("er-canvas").classList.remove("has-selection");
+
+  cols.querySelectorAll(".er-node").forEach((n) => {
+    n.addEventListener("click", () => selectERNode(n.dataset.key));
+  });
+
+  requestAnimationFrame(drawEREdges);
+}
+
+// 依中介表關聯畫出節點之間的連線
+function drawEREdges() {
+  const svg = document.getElementById("er-edges");
+  const canvas = document.getElementById("er-canvas");
+  if (!ER || !svg) return;
+  const box = canvas.getBoundingClientRect();
+  svg.setAttribute("viewBox", `0 0 ${canvas.scrollWidth} ${canvas.scrollHeight}`);
+  svg.setAttribute("width", canvas.scrollWidth);
+  svg.setAttribute("height", canvas.scrollHeight);
+
+  const anchor = (key, side) => {
+    const el = canvas.querySelector(`[data-key="${CSS.escape(key)}"]`);
+    if (!el) return null;
+    const r = el.getBoundingClientRect();
+    return {
+      x: (side === "right" ? r.right : r.left) - box.left + canvas.scrollLeft,
+      y: r.top + r.height / 2 - box.top + canvas.scrollTop,
+    };
+  };
+
+  const css = getComputedStyle(document.documentElement);
+  const colorQC = css.getPropertyValue("--er-qc").trim();
+  const colorReagent = css.getPropertyValue("--er-reagent").trim();
+  const colorItem = css.getPropertyValue("--er-item").trim();
+
+  const edges = [];
+  // 儀器 → 品管液
+  ER.reagent_qcs.forEach((q) => {
+    edges.push({ from: `inst:${ER.instrument.serial_number}`, to: `qc:${q.reagent_qc_id}`, color: colorQC });
+  });
+  // 品管液 → 試劑
+  ER.edges.qc_reagent.forEach((e) => {
+    edges.push({ from: `qc:${e.reagent_qc_id}`, to: `reagent:${e.reagent_id}`, color: colorReagent });
+  });
+  // 試劑 → 檢驗項目
+  ER.edges.reagent_item.forEach((e) => {
+    edges.push({ from: `reagent:${e.reagent_id}`, to: `item:${e.item_id}`, color: colorItem });
+  });
+
+  svg.innerHTML = edges
+    .map((e) => {
+      const a = anchor(e.from, "right");
+      const b = anchor(e.to, "left");
+      if (!a || !b) return "";
+      const dx = Math.max(24, (b.x - a.x) / 2);
+      const d = `M${a.x},${a.y} C${a.x + dx},${a.y} ${b.x - dx},${b.y} ${b.x},${b.y}`;
+      return `<path class="er-edge" d="${d}" stroke="${e.color}" data-from="${esc(e.from)}" data-to="${esc(e.to)}"></path>`;
+    })
+    .join("");
+  ER._edgeList = edges;
+  if (erSelected) applyERHighlight(erSelected);
+}
+
+// 由選取節點沿關聯向兩側展開，找出所有相連節點
+function erConnectedKeys(key) {
+  const keys = new Set([key]);
+  const edges = ER._edgeList || [];
+  let grew = true;
+  while (grew) {
+    grew = false;
+    edges.forEach((e) => {
+      if (keys.has(e.from) && !keys.has(e.to)) { keys.add(e.to); grew = true; }
+      if (keys.has(e.to) && !keys.has(e.from)) { keys.add(e.from); grew = true; }
+    });
+  }
+  return keys;
+}
+
+function applyERHighlight(key) {
+  const canvas = document.getElementById("er-canvas");
+  const keys = erConnectedKeys(key);
+  canvas.classList.add("has-selection");
+  canvas.querySelectorAll(".er-node").forEach((n) => {
+    n.classList.toggle("hl", keys.has(n.dataset.key));
+    n.classList.toggle("root", n.dataset.key === key);
+  });
+  canvas.querySelectorAll(".er-edge").forEach((p) => {
+    p.classList.toggle("hl", keys.has(p.dataset.from) && keys.has(p.dataset.to));
+  });
+}
+
+function clearERSelection() {
+  const canvas = document.getElementById("er-canvas");
+  canvas.classList.remove("has-selection");
+  canvas.querySelectorAll(".er-node").forEach((n) => n.classList.remove("hl", "root"));
+  canvas.querySelectorAll(".er-edge").forEach((p) => p.classList.remove("hl"));
+  erSelected = null;
+  document.getElementById("er-detail").innerHTML =
+    `<div class="placeholder">點擊卡片查看詳細資料與關聯</div>`;
+}
+
+function selectERNode(key) {
+  if (erSelected === key) { clearERSelection(); return; }
+  erSelected = key;
+  applyERHighlight(key);
+  renderERDetail(key);
+  // 面板收合時點擊卡片，自動展開以顯示明細
+  if (document.getElementById("er-layout").classList.contains("detail-collapsed")) {
+    toggleERDetail(false);
+  }
+}
+
+// 選取節點的明細與其直接關聯清單
+function renderERDetail(key) {
+  const [type, id] = [key.slice(0, key.indexOf(":")), key.slice(key.indexOf(":") + 1)];
+  const kv = (k, v) => `<div class="er-kv">${k}：<b>${esc(v ?? "-")}</b></div>`;
+  let html = "";
+
+  if (type === "inst") {
+    const i = ER.instrument;
+    html = `<h4>🖥️ ${esc(i.instrument_name)}</h4>${kv("S/N", i.serial_number)}
+      ${kv("組別", i.lab_group)}${kv("角色", i.machine_role)}
+      ${kv("關聯", `品管液 ${ER.counts.reagent_qcs} ｜ 試劑 ${ER.counts.reagents} ｜ 項目 ${ER.counts.items}`)}`;
+  } else if (type === "qc") {
+    const q = ER.reagent_qcs.find((x) => x.reagent_qc_id === id);
+    const linked = ER.edges.qc_reagent.filter((e) => e.reagent_qc_id === id)
+      .map((e) => ER.reagents.find((r) => r.reagent_id === e.reagent_id)?.reagent_name)
+      .filter(Boolean);
+    html = `<h4>🧫 品管液：${esc(q.test_item)} · ${esc(q.qc_level)}</h4>
+      ${kv("批號", q.qc_lot_number)}${kv("檢體類別", q.specimen_code ? `${q.specimen_code}（${q.specimen_name}）` : "-")}
+      ${kv("原廠 Mean / SD", `${q.manufacturer_mean ?? "-"} / ${q.manufacturer_sd ?? "-"}`)}
+      ${kv("平測後 Mean / SD", `${q.new_standard_mean ?? "-"} / ${q.new_standard_sd ?? "-"}`)}
+      ${kv("平行測試", q.parallel_test_done ? "已完成" : "未完成")}
+      ${kv("管理的試劑", linked.length ? linked.join("、") : "（尚無關聯）")}`;
+  } else if (type === "reagent") {
+    const r = ER.reagents.find((x) => x.reagent_id === id);
+    const items = ER.edges.reagent_item.filter((e) => e.reagent_id === id)
+      .map((e) => ER.items.find((it) => it.item_id === e.item_id)?.item_code)
+      .filter(Boolean);
+    const qcs = ER.edges.qc_reagent.filter((e) => e.reagent_id === id)
+      .map((e) => {
+        const q = ER.reagent_qcs.find((x) => x.reagent_qc_id === e.reagent_qc_id);
+        return q ? `${q.test_item} ${q.qc_level}（${q.qc_lot_number}）` : null;
+      }).filter(Boolean);
+    html = `<h4>🧪 試劑：${esc(r.reagent_name)}</h4>
+      ${kv("批號", r.lot_number)}${kv("對應項目欄位", r.test_item)}
+      ${kv("可操作檢體", (r.specimen_codes || []).join("、") || "-")}
+      ${kv("入庫 / 平測", `${r.in_stock ? "已入庫" : "未入庫"} / ${r.parallel_test_done ? "已平測" : "未平測"}`)}
+      ${kv("檢驗項目", items.length ? items.join("、") : "（尚無關聯）")}
+      ${kv("使用的品管液", qcs.length ? qcs.join("、") : "（尚無關聯）")}`;
+  } else if (type === "item") {
+    const it = ER.items.find((x) => x.item_id === id);
+    const reagents = ER.edges.reagent_item.filter((e) => e.item_id === id)
+      .map((e) => ER.reagents.find((r) => r.reagent_id === e.reagent_id)?.reagent_name)
+      .filter(Boolean);
+    html = `<h4>🔬 檢驗項目：${esc(it.item_code)}</h4>
+      ${kv("全名", it.item_name)}${kv("單位", it.unit)}
+      ${kv("由哪些試劑產生", reagents.length ? reagents.join("、") : "（尚無關聯）")}`;
+  }
+  document.getElementById("er-detail").innerHTML = html;
+}
+
+// 詳細資料面板收合（向右滑出動畫）。
+// 欄寬會隨面板開合改變（卡片文字換行、高度變動），故動畫期間持續重算連線。
+function toggleERDetail(collapsed) {
+  const layout = document.getElementById("er-layout");
+  layout.classList.toggle("detail-collapsed", collapsed);
+  const until = performance.now() + 360;
+  const tick = () => {
+    if (ER) drawEREdges();
+    if (performance.now() < until) requestAnimationFrame(tick);
+  };
+  requestAnimationFrame(tick);
+}
+document.getElementById("er-detail-toggle").addEventListener("click", () => toggleERDetail(true));
+document.getElementById("er-detail-open").addEventListener("click", () => toggleERDetail(false));
+
+document.getElementById("er-group").addEventListener("change", (e) => {
+  fillInstrumentSelect("er-instrument", e.target.value, false);
+  loadER();
+});
+document.getElementById("er-instrument").addEventListener("change", loadER);
+document.getElementById("er-refresh").addEventListener("click", loadER);
+document.getElementById("er-reset").addEventListener("click", clearERSelection);
+
+// 畫布尺寸只要改變（面板開合、側欄收合、視窗縮放）就重算連線座標
+if (window.ResizeObserver) {
+  new ResizeObserver(() => { if (ER) drawEREdges(); })
+    .observe(document.getElementById("er-canvas"));
+} else {
+  window.addEventListener("resize", () => { if (ER) drawEREdges(); });
+}
+
+function openER() {
+  if (!erInited) { erInited = true; loadER(); }
+  else requestAnimationFrame(drawEREdges); // 切回分頁時重算座標
+}
+
+// ---------- 管理頁（修改 / 移除 項目・試劑・品管液）----------
+// 各管理頁設定：清單 API、資源 API、表格欄位、編輯欄位
+const MANAGE = {
+  "mg-item": {
+    listPath: "/api/items",
+    resPath: (id) => `/api/items/${id}`,
+    pk: "item_id",
+    label: "檢驗項目",
+    nameOf: (r) => r.item_code,
+    cells: (r) => [r.item_code, r.item_name ?? "", r.unit ?? "", r.sort_order ?? 0],
+    fields: [
+      { name: "item_code", label: "項目代碼*", type: "text", required: true },
+      { name: "item_name", label: "項目全名", type: "text" },
+      { name: "unit", label: "單位", type: "text" },
+      { name: "sort_order", label: "排序", type: "number" },
+    ],
+  },
+  "mg-reagent": {
+    listPath: "/api/reagents",
+    resPath: (id) => `/api/reagents/${id}`,
+    pk: "reagent_id",
+    label: "試劑",
+    nameOf: (r) => r.reagent_name,
+    cells: (r) => [
+      r.reagent_name, r.lot_number, r.test_item,
+      (r.specimen_type_codes || []).join("、") || "-",
+      pill(r.in_stock, "已入庫", "未入庫"),
+      pill(r.parallel_test_done, "已平測", "未平測"),
+      r.expiry_date ?? "-",
+    ],
+    fields: [
+      { name: "reagent_name", label: "試劑名稱*", type: "text", required: true },
+      { name: "lot_number", label: "試劑批號*", type: "text", required: true },
+      { name: "test_item", label: "對應檢驗項目*", type: "text", required: true },
+      { name: "manufacturer", label: "廠商", type: "text" },
+      { name: "expiry_date", label: "效期", type: "date" },
+      { name: "previous_lot_number", label: "上一個批號", type: "text" },
+      { name: "in_stock_date", label: "入庫日期", type: "date" },
+      { name: "parallel_test_date", label: "平測完成日期", type: "date" },
+      { name: "in_stock", label: "已入庫", type: "checkbox" },
+      { name: "parallel_test_done", label: "已完成平測", type: "checkbox" },
+      { name: "same_lot_as_previous", label: "與上一批同批號", type: "checkbox" },
+      { name: "specimen_type_codes", label: "可操作檢體類別", type: "specimens" },
+      { name: "remark", label: "備註", type: "text", full: true },
+    ],
+  },
+  "mg-rqc": {
+    listPath: "/api/reagent-qc",
+    resPath: (id) => `/api/reagent-qc/${id}`,
+    pk: "reagent_qc_id",
+    label: "品管液",
+    nameOf: (r) => `${r.test_item} ${r.qc_level}`,
+    cells: (r) => [
+      r.test_item, r.qc_level, r.qc_lot_number,
+      r.specimen_type_code ?? "-",
+      `${r.new_standard_mean ?? r.manufacturer_mean ?? "-"} / ${r.new_standard_sd ?? r.manufacturer_sd ?? "-"}`,
+      pill(r.parallel_test_done, "已平測", "未平測"),
+      pill(r.in_use, "使用中", "停用中"),
+    ],
+    fields: [
+      { name: "test_item", label: "檢驗項目*", type: "text", required: true },
+      { name: "test_item_full_name", label: "項目全名", type: "text" },
+      { name: "qc_level", label: "濃度 (Level)*", type: "text", required: true },
+      { name: "qc_lot_number", label: "品管液批號*", type: "text", required: true },
+      { name: "specimen_type_code", label: "檢體類別", type: "specimen-one" },
+      { name: "unit", label: "單位", type: "text" },
+      { name: "manufacturer_mean", label: "原廠均值", type: "number" },
+      { name: "manufacturer_sd", label: "原廠 SD", type: "number" },
+      { name: "new_standard_mean", label: "平測後新均值", type: "number" },
+      { name: "new_standard_sd", label: "平測後新 SD", type: "number" },
+      { name: "parallel_test_date", label: "平測完成日期", type: "date" },
+      { name: "parallel_test_done", label: "已完成平行測試", type: "checkbox" },
+      { name: "in_use", label: "目前使用中", type: "checkbox" },
+      { name: "remark", label: "備註", type: "text", full: true },
+    ],
+  },
+};
+
+const pill = (on, yes, no) =>
+  `<span class="state-pill ${on ? "on" : "off"}">${on ? yes : no}</span>`;
+
+let SPECIMEN_TYPES = [];
+let mgCurrent = null; // { view, row }
+
+// 載入某管理頁的清單（依儀器過濾）
+async function loadManage(view) {
+  const cfg = MANAGE[view];
+  const sn = document.getElementById(`${view}-instrument`).value;
+  const tbody = document.querySelector(`#${view}-table tbody`);
+  const cols = cfg.cells({ specimen_type_codes: [] }).length + 2;
+  if (!sn) {
+    tbody.innerHTML = `<tr><td colspan="${cols}" class="empty">請先選擇儀器</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = `<tr><td colspan="${cols}" class="empty">載入中…</td></tr>`;
+  try {
+    // include_inactive：管理頁需列出已停用者，才能重新啟用
+    const rows = await api(
+      `${cfg.listPath}?instrument_serial_number=${encodeURIComponent(sn)}&include_inactive=true`
+    );
+    if (!rows.length) {
+      tbody.innerHTML = `<tr><td colspan="${cols}" class="empty">此儀器尚無${cfg.label}</td></tr>`;
+      return;
+    }
+    tbody.innerHTML = rows
+      .map((r) => {
+        const id = r[cfg.pk];
+        return `<tr>
+          ${cfg.cells(r).map((c) => `<td>${c}</td>`).join("")}
+          <td>${pill(r.active !== false, "啟用", "停用")}</td>
+          <td><div class="row-actions">
+            <button class="btn-xs" data-act="edit" data-id="${esc(id)}">編輯</button>
+            <button class="btn-xs" data-act="toggle" data-id="${esc(id)}">${r.active !== false ? "停用" : "啟用"}</button>
+            <button class="btn-xs danger" data-act="del" data-id="${esc(id)}">刪除</button>
+          </div></td>
+        </tr>`;
+      })
+      .join("");
+    // 綁定列操作
+    tbody.querySelectorAll("button[data-act]").forEach((b) => {
+      const row = rows.find((r) => String(r[cfg.pk]) === b.dataset.id);
+      b.addEventListener("click", () => {
+        if (b.dataset.act === "edit") openEditModal(view, row);
+        if (b.dataset.act === "toggle") toggleActive(view, row);
+        if (b.dataset.act === "del") deleteRow(view, row);
+      });
+    });
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="${cols}" class="empty">載入失敗：${esc(e.message)}</td></tr>`;
+  }
+}
+
+function mgMsg(view, text, cls = "") {
+  const el = document.getElementById(`${view}-msg`);
+  el.className = "add-msg " + cls;
+  el.textContent = text;
+}
+
+// 取出後端錯誤訊息中的 detail
+function errText(err) {
+  try { return JSON.parse(err.message).detail || err.message; } catch { return err.message; }
+}
+
+// 停用 / 啟用（保留歷史資料的安全作法）
+async function toggleActive(view, row) {
+  const cfg = MANAGE[view];
+  const next = row.active === false;
+  try {
+    await api(cfg.resPath(row[cfg.pk]), {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ active: next }),
+    });
+    mgMsg(view, `✅ 已${next ? "啟用" : "停用"}「${cfg.nameOf(row)}」`, "ok");
+    loadManage(view);
+  } catch (e) {
+    mgMsg(view, "❌ 失敗：" + errText(e), "err");
+  }
+}
+
+async function deleteRow(view, row) {
+  const cfg = MANAGE[view];
+  if (!confirm(`確定要刪除${cfg.label}「${cfg.nameOf(row)}」嗎？此動作無法復原。\n\n若此筆已被引用，建議改用「停用」。`)) return;
+  try {
+    await api(cfg.resPath(row[cfg.pk]), { method: "DELETE" });
+    mgMsg(view, `✅ 已刪除「${cfg.nameOf(row)}」`, "ok");
+    loadManage(view);
+  } catch (e) {
+    mgMsg(view, "❌ " + errText(e), "err");
+  }
+}
+
+// ---- 編輯對話框 ----
+const editModal = document.getElementById("edit-modal");
+
+function openEditModal(view, row) {
+  const cfg = MANAGE[view];
+  mgCurrent = { view, row };
+  document.getElementById("edit-modal-title").textContent = `編輯${cfg.label}：${cfg.nameOf(row)}`;
+  document.getElementById("edit-modal-msg").textContent = "";
+
+  document.getElementById("edit-form").innerHTML = cfg.fields
+    .map((f) => {
+      const v = row[f.name];
+      if (f.type === "checkbox") {
+        return `<label class="check-label"><input type="checkbox" name="${f.name}" ${v ? "checked" : ""} />${f.label}</label>`;
+      }
+      if (f.type === "specimens") {
+        const sel = row.specimen_type_codes || [];
+        return `<fieldset class="full check-group"><legend>${f.label}（可複選）</legend><div class="check-row">${
+          SPECIMEN_TYPES.map((s) => `<label><input type="checkbox" data-spec value="${esc(s.code)}" ${sel.includes(s.code) ? "checked" : ""} />${esc(s.code)}（${esc(s.name)}）</label>`).join("")
+        }</div></fieldset>`;
+      }
+      if (f.type === "specimen-one") {
+        return `<label>${f.label}<select name="${f.name}"><option value="">（不指定）</option>${
+          SPECIMEN_TYPES.map((s) => `<option value="${esc(s.code)}" ${v === s.code ? "selected" : ""}>${esc(s.code)}（${esc(s.name)}）</option>`).join("")
+        }</select></label>`;
+      }
+      const val = v == null ? "" : String(v);
+      const step = f.type === "number" ? ' step="any"' : "";
+      return `<label class="${f.full ? "full" : ""}">${f.label}<input type="${f.type}" name="${f.name}" value="${esc(val)}"${step} ${f.required ? "required" : ""} /></label>`;
+    })
+    .join("");
+  editModal.classList.add("open");
+}
+
+function closeEditModal() {
+  editModal.classList.remove("open");
+  mgCurrent = null;
+}
+document.getElementById("edit-modal-close").addEventListener("click", closeEditModal);
+document.getElementById("edit-modal-cancel").addEventListener("click", closeEditModal);
+editModal.addEventListener("click", (e) => { if (e.target === editModal) closeEditModal(); });
+document.addEventListener("keydown", (e) => { if (e.key === "Escape" && editModal.classList.contains("open")) closeEditModal(); });
+
+document.getElementById("edit-modal-save").addEventListener("click", async () => {
+  if (!mgCurrent) return;
+  const { view, row } = mgCurrent;
+  const cfg = MANAGE[view];
+  const form = document.getElementById("edit-form");
+  const msg = document.getElementById("edit-modal-msg");
+
+  if (!form.reportValidity()) return;
+
+  const payload = {};
+  cfg.fields.forEach((f) => {
+    if (f.type === "checkbox") {
+      payload[f.name] = form.querySelector(`[name=${f.name}]`).checked;
+    } else if (f.type === "specimens") {
+      payload[f.name] = [...form.querySelectorAll("[data-spec]:checked")].map((c) => c.value);
+    } else {
+      const el = form.querySelector(`[name=${f.name}]`);
+      const v = el.value.trim();
+      // 空字串代表清空該欄位；數字欄位轉型
+      payload[f.name] = v === "" ? null : f.type === "number" ? parseFloat(v) : v;
+    }
+  });
+
+  msg.className = "add-msg";
+  msg.textContent = "儲存中…";
+  try {
+    await api(cfg.resPath(row[cfg.pk]), {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    closeEditModal();
+    mgMsg(view, `✅ 已更新「${cfg.nameOf(row)}」`, "ok");
+    loadManage(view);
+  } catch (e) {
+    msg.className = "add-msg err";
+    msg.textContent = "❌ " + errText(e);
+  }
+});
+
+// 三個管理頁的組別 → 儀器連動與查詢
+Object.keys(MANAGE).forEach((view) => {
+  document.getElementById(`${view}-group`).addEventListener("change", (e) => {
+    fillInstrumentSelect(`${view}-instrument`, e.target.value, false);
+    loadManage(view);
+  });
+  document.getElementById(`${view}-instrument`).addEventListener("change", () => loadManage(view));
+  document.getElementById(`${view}-refresh`).addEventListener("click", () => loadManage(view));
+});
+
+function openManage(view) {
+  loadManage(view);
+}
 
 // ---------- JSON 匯入 ----------
 // 各頁面的 API 路徑、欄位格式（[型別, 是否必填]）與模板；模板同時作為輸入框提示

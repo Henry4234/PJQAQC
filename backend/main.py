@@ -19,6 +19,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 import database as db
+import manage
 import register
 import westgard
 
@@ -35,6 +36,8 @@ app.add_middleware(
 
 # 新增（register）相關 API：儀器 / 項目 / 試劑 / 品管液 / 關聯
 app.include_router(register.router)
+# 管理（manage）相關 API：修改 / 移除 項目 / 試劑 / 品管液
+app.include_router(manage.router)
 
 # AI 判讀設定
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
@@ -99,6 +102,93 @@ def list_instruments():
     for r in rows:
         grouped.setdefault(r["lab_group"], []).append(r)
     return {"groups": grouped, "all": rows}
+
+
+@app.get("/api/er-graph")
+def er_graph(instrument_serial_number: str = Query(..., description="儀器 S/N")):
+    """回傳某台儀器的主檔關聯圖（儀器 → 品管液 → 試劑 → 檢驗項目）。
+
+    供前端互動式 ER 圖使用：節點為各主檔，邊來自中介表
+    （qc_reagent_map / reagent_item_map / reagent_specimen_map）。
+    """
+    inst = db.fetch_one(
+        "SELECT i.*, g.group_name AS lab_group "
+        "FROM instruments i JOIN lab_group g ON i.group_id = g.group_id "
+        "WHERE i.serial_number = %s",
+        (instrument_serial_number,),
+    )
+    if not inst:
+        raise HTTPException(status_code=404, detail=f"查無此儀器：{instrument_serial_number}")
+
+    sn = (instrument_serial_number,)
+    items = db.fetch_all(
+        "SELECT item_id, item_code, item_name, unit, sort_order FROM items "
+        "WHERE instrument_serial_number = %s AND active = TRUE ORDER BY sort_order, item_code",
+        sn,
+    )
+    reagents = db.fetch_all(
+        "SELECT reagent_id, reagent_name, test_item, lot_number, in_stock, "
+        "parallel_test_done, expiry_date FROM reagent "
+        "WHERE instrument_serial_number = %s AND active = TRUE ORDER BY reagent_name",
+        sn,
+    )
+    qcs = db.fetch_all(
+        "SELECT q.reagent_qc_id, q.test_item, q.qc_level, q.qc_lot_number, q.unit, "
+        "q.parallel_test_done, q.in_use, q.manufacturer_mean, q.manufacturer_sd, "
+        "q.new_standard_mean, q.new_standard_sd, s.code AS specimen_code, s.name AS specimen_name "
+        "FROM reagent_qc q LEFT JOIN specimen_type s ON s.specimen_type_id = q.specimen_type_id "
+        "WHERE q.instrument_serial_number = %s AND q.active = TRUE "
+        "ORDER BY q.test_item, q.qc_level",
+        sn,
+    )
+
+    # 中介表關聯（限縮在此儀器的主檔範圍內）
+    qc_reagent = db.fetch_all(
+        "SELECT m.reagent_qc_id, m.reagent_id FROM qc_reagent_map m "
+        "JOIN reagent_qc q ON q.reagent_qc_id = m.reagent_qc_id "
+        "JOIN reagent r ON r.reagent_id = m.reagent_id "
+        "WHERE q.instrument_serial_number = %s AND r.instrument_serial_number = %s",
+        (instrument_serial_number, instrument_serial_number),
+    )
+    reagent_item = db.fetch_all(
+        "SELECT m.reagent_id, m.item_id FROM reagent_item_map m "
+        "JOIN reagent r ON r.reagent_id = m.reagent_id "
+        "JOIN items i ON i.item_id = m.item_id "
+        "WHERE r.instrument_serial_number = %s AND i.instrument_serial_number = %s",
+        (instrument_serial_number, instrument_serial_number),
+    )
+    reagent_specimen = db.fetch_all(
+        "SELECT m.reagent_id, s.code, s.name FROM reagent_specimen_map m "
+        "JOIN reagent r ON r.reagent_id = m.reagent_id "
+        "JOIN specimen_type s ON s.specimen_type_id = m.specimen_type_id "
+        "WHERE r.instrument_serial_number = %s",
+        (instrument_serial_number,),
+    )
+
+    # 把檢體代碼掛回各試劑，方便前端直接顯示
+    spec_by_reagent: dict[str, list[str]] = {}
+    for r in reagent_specimen:
+        spec_by_reagent.setdefault(r["reagent_id"], []).append(r["code"])
+    for r in reagents:
+        r["specimen_codes"] = spec_by_reagent.get(r["reagent_id"], [])
+
+    return {
+        "instrument": inst,
+        "items": items,
+        "reagents": reagents,
+        "reagent_qcs": qcs,
+        "edges": {
+            "qc_reagent": qc_reagent,
+            "reagent_item": reagent_item,
+        },
+        "counts": {
+            "items": len(items),
+            "reagents": len(reagents),
+            "reagent_qcs": len(qcs),
+            "qc_reagent_links": len(qc_reagent),
+            "reagent_item_links": len(reagent_item),
+        },
+    }
 
 
 @app.get("/api/test-items")
