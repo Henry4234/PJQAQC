@@ -1,10 +1,13 @@
-"""QAQC 管理系統後端 (FastAPI)。
+"""QAQC 管理系統後端（v3 分層式架構）。
 
-職責：
-  - 連線 MySQL 讀寫品管紀錄 (qc_records) 與儀器主檔 (instruments)
-  - 提供 Dashboard 統計指標 API
-  - 提供品管紀錄的查詢 / 新增 API（新增時自動計算 z-score 與 Westgard 判讀）
-  - 提供前端靜態網頁
+職責分工：
+  main.py     — 讀取類 API、Dashboard、L-J、關聯圖，以及 app 組裝
+  register.py — 新增類 API（主檔 / 批號 / 關聯 / 品管執行 / 校正）
+  manage.py   — 修改與停用／刪除類 API
+  westgard.py — 純判讀邏輯
+
+核心概念：assay = 儀器 × 檢驗項目 × 檢體別。品管判讀一律綁儀器
+（Westgard 連續規則須分機器各自成序列）。
 """
 from __future__ import annotations
 
@@ -16,16 +19,15 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 import database as db
 import manage
 import register
-import westgard
 
 load_dotenv()
 
-app = FastAPI(title="QAQC 管理系統 API", version="1.0.0")
+app = FastAPI(title="QAQC 品管管理系統 API", version="3.0.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -34,327 +36,520 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 新增（register）相關 API：儀器 / 項目 / 試劑 / 品管液 / 關聯
 app.include_router(register.router)
-# 管理（manage）相關 API：修改 / 移除 項目 / 試劑 / 品管液
 app.include_router(manage.router)
 
-# AI 判讀設定
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 AI_MODEL = os.environ.get("AI_MODEL", "claude-opus-4-8")
 GUIDE_PATH = Path(__file__).resolve().parent / "westgard_guide.md"
 
 
-# ----------------------------- 資料模型 ----------------------------- #
-class QCRecordIn(BaseModel):
-    instrument_name: str
-    instrument_serial_number: str
-    department: str | None = None
-    qc_date: str = Field(..., description="YYYY-MM-DD")
-    qc_time: str = Field(..., description="HH:MM:SS")
-    operator: str | None = None
-    test_item: str
-    test_item_full_name: str | None = None
-    qc_level: str | None = None
-    qc_lot_number: str | None = None
-    qc_result_value: float
-    unit: str | None = None
-    lot_mean: float
-    lot_standard_deviation: float
-    acceptable_range_lower: float | None = None
-    acceptable_range_upper: float | None = None
-    remark: str | None = None
-
-
-# ----------------------------- 工具函式 ----------------------------- #
-def _compute_z(value: float, mean: float, sd: float) -> float | None:
-    if sd in (None, 0):
-        return None
-    return round((value - mean) / sd, 2)
-
-
-def _today_str() -> str:
+def _today() -> str:
     return date.today().isoformat()
 
 
-def _serials_in_group(lab_group: str) -> list[str]:
-    """以組別名稱查該組所有儀器 S/N（組別改以 lab_group 表關聯）。"""
-    rows = db.fetch_all(
-        "SELECT i.serial_number FROM instruments i "
-        "JOIN lab_group g ON i.group_id = g.group_id "
-        "WHERE g.group_name = %s",
-        (lab_group,),
+# ============================ 主檔查詢 ============================ #
+@app.get("/api/sections", summary="組別清單")
+def list_sections():
+    return db.fetch_all(
+        "SELECT * FROM lab_sections WHERE active = TRUE ORDER BY section_name"
     )
-    return [r["serial_number"] for r in rows]
 
 
-# ------------------------------- API ------------------------------- #
-@app.get("/api/instruments")
-def list_instruments():
-    """回傳儀器主檔，依組別分群，供前端雙層選單使用。"""
+@app.get("/api/instruments", summary="儀器清單（依組別分群）")
+def list_instruments(include_inactive: bool = Query(False)):
+    cond = "" if include_inactive else " AND i.active = TRUE"
     rows = db.fetch_all(
-        "SELECT i.*, g.group_name AS lab_group "
-        "FROM instruments i JOIN lab_group g ON i.group_id = g.group_id "
-        "WHERE i.active = TRUE "
-        "ORDER BY g.group_name, i.instrument_name, i.machine_role"
+        "SELECT i.*, s.section_name, s.section_code, "
+        "       p.serial_number AS backup_of_serial, p.instrument_name AS backup_of_name "
+        "FROM instruments i "
+        "JOIN lab_sections s ON s.section_id = i.section_id "
+        "LEFT JOIN instruments p ON p.instrument_id = i.backup_of_instrument_id "
+        f"WHERE 1=1{cond} "
+        "ORDER BY s.section_name, i.instrument_name, i.instrument_role"
     )
     grouped: dict[str, list] = {}
     for r in rows:
-        grouped.setdefault(r["lab_group"], []).append(r)
+        grouped.setdefault(r["section_name"], []).append(r)
     return {"groups": grouped, "all": rows}
 
 
-@app.get("/api/er-graph")
-def er_graph(instrument_serial_number: str = Query(..., description="儀器 S/N")):
-    """回傳某台儀器的主檔關聯圖（儀器 → 品管液 → 試劑 → 檢驗項目）。
+@app.get("/api/specimen-types", summary="檢體別清單")
+def list_specimen_types():
+    return db.fetch_all(
+        "SELECT * FROM specimen_types WHERE active = TRUE ORDER BY specimen_code"
+    )
 
-    供前端互動式 ER 圖使用：節點為各主檔，邊來自中介表
-    （qc_reagent_map / reagent_item_map / reagent_specimen_map）。
+
+@app.get("/api/test-items", summary="全院檢驗項目字典")
+def list_test_items(q: str | None = Query(None, description="代碼或名稱關鍵字")):
+    if q:
+        like = f"%{q}%"
+        return db.fetch_all(
+            "SELECT * FROM test_items WHERE active = TRUE "
+            "AND (item_code LIKE %s OR item_name LIKE %s) ORDER BY item_code",
+            (like, like),
+        )
+    return db.fetch_all("SELECT * FROM test_items WHERE active = TRUE ORDER BY item_code")
+
+
+# ============================ assay（模型中心）============================ #
+@app.get("/api/assays", summary="檢驗設定清單（儀器 × 項目 × 檢體）")
+def list_assays(
+    instrument_serial_number: str | None = Query(None),
+    section_name: str | None = Query(None),
+    item_code: str | None = Query(None),
+    specimen_code: str | None = Query(None),
+    include_inactive: bool = Query(False),
+):
+    conds, params = [], []
+    if instrument_serial_number:
+        conds.append("serial_number = %s")
+        params.append(instrument_serial_number)
+    if section_name:
+        conds.append("section_name = %s")
+        params.append(section_name)
+    if item_code:
+        conds.append("item_code = %s")
+        params.append(item_code)
+    if specimen_code:
+        conds.append("specimen_code = %s")
+        params.append(specimen_code)
+    if not include_inactive:
+        conds.append("active = TRUE")
+    where = ("WHERE " + " AND ".join(conds)) if conds else ""
+    return db.fetch_all(
+        f"SELECT * FROM v_assay_catalog {where} ORDER BY serial_number, item_code, specimen_code",
+        tuple(params),
+    )
+
+
+def _assay_or_404(assay_id: str) -> dict:
+    row = db.fetch_one("SELECT * FROM v_assay_catalog WHERE assay_id = %s", (assay_id,))
+    if not row:
+        raise HTTPException(status_code=404, detail=f"查無檢驗設定：{assay_id}")
+    return row
+
+
+@app.get("/api/assays/{assay_id}", summary="單一檢驗設定（含三種產品關聯與目前目標值）")
+def get_assay(assay_id: str):
+    row = _assay_or_404(assay_id)
+    row["reagents"] = db.fetch_all(
+        "SELECT p.*, r.reagent_role, r.required, r.priority "
+        "FROM assay_reagent_requirements r "
+        "JOIN reagent_products p ON p.reagent_product_id = r.reagent_product_id "
+        "WHERE r.assay_id = %s ORDER BY r.priority, p.product_name",
+        (assay_id,),
+    )
+    row["qc_products"] = db.fetch_all(
+        "SELECT p.*, q.required, q.priority FROM assay_qc_requirements q "
+        "JOIN qc_products p ON p.qc_product_id = q.qc_product_id "
+        "WHERE q.assay_id = %s ORDER BY q.priority, p.product_name",
+        (assay_id,),
+    )
+    row["calibrators"] = db.fetch_all(
+        "SELECT p.*, c.required, c.priority FROM assay_calibrator_requirements c "
+        "JOIN calibrator_products p ON p.calibrator_product_id = c.calibrator_product_id "
+        "WHERE c.assay_id = %s ORDER BY c.priority, p.product_name",
+        (assay_id,),
+    )
+    row["qc_targets"] = db.fetch_all(
+        "SELECT t.*, l.lot_number, l.level_code, l.expiry_date, l.lot_status, "
+        "       p.product_name AS qc_product_name "
+        "FROM qc_target_values t "
+        "JOIN qc_lots l ON l.qc_lot_id = t.qc_lot_id "
+        "JOIN qc_products p ON p.qc_product_id = t.qc_product_id "
+        "WHERE t.assay_id = %s AND t.effective_to IS NULL "
+        "ORDER BY p.product_name, l.level_code",
+        (assay_id,),
+    )
+    return row
+
+
+# ============================ 產品與批號 ============================ #
+def _products_with_lots(product_table: str, lot_table: str, fk: str,
+                        lot_order: str, include_inactive: bool) -> list[dict]:
+    """產品清單並掛上各自批號。
+
+    批號以「一次查詢 + Python 分組」取得，避免每個產品各發一次查詢
+    （每次查詢都會對 NAS 重開連線，N+1 在區域網路上很有感）。
     """
+    cond = "" if include_inactive else "WHERE active = TRUE "
+    products = db.fetch_all(f"SELECT * FROM {product_table} {cond}ORDER BY product_name")
+    for p in products:
+        p["lots"] = []
+    if not products:
+        return products
+    index = {p[fk]: p for p in products}
+    placeholders = ", ".join(["%s"] * len(index))
+    lots = db.fetch_all(
+        f"SELECT * FROM {lot_table} WHERE {fk} IN ({placeholders}) "
+        f"ORDER BY FIELD(lot_status,'IN_USE','AVAILABLE','QUARANTINE'), {lot_order}",
+        tuple(index.keys()),
+    )
+    for l in lots:
+        owner = index.get(l[fk])
+        if owner is not None:
+            owner["lots"].append(l)
+    return products
+
+
+@app.get("/api/reagent-products", summary="試劑產品清單（含批號）")
+def list_reagent_products(include_inactive: bool = Query(False)):
+    return _products_with_lots("reagent_products", "reagent_lots",
+                               "reagent_product_id", "expiry_date", include_inactive)
+
+
+@app.get("/api/qc-products", summary="品管液產品清單（含批號與濃度）")
+def list_qc_products(include_inactive: bool = Query(False)):
+    return _products_with_lots("qc_products", "qc_lots",
+                               "qc_product_id", "level_code", include_inactive)
+
+
+@app.get("/api/calibrator-products", summary="校正液產品清單（含批號）")
+def list_calibrator_products(include_inactive: bool = Query(False)):
+    return _products_with_lots("calibrator_products", "calibrator_lots",
+                               "calibrator_product_id", "level_code", include_inactive)
+
+
+@app.get("/api/qc-lots", summary="品管液批號（可依產品 / 儀器過濾）")
+def list_qc_lots(
+    qc_product_id: str | None = Query(None),
+    instrument_serial_number: str | None = Query(None),
+):
+    if instrument_serial_number:
+        # 該儀器的 assay 允許使用的品管液產品，其所有批號
+        return db.fetch_all(
+            "SELECT DISTINCT l.*, p.product_name FROM qc_lots l "
+            "JOIN qc_products p ON p.qc_product_id = l.qc_product_id "
+            "JOIN assay_qc_requirements r ON r.qc_product_id = l.qc_product_id "
+            "JOIN instrument_assays a ON a.assay_id = r.assay_id "
+            "JOIN instruments i ON i.instrument_id = a.instrument_id "
+            "WHERE i.serial_number = %s ORDER BY p.product_name, l.level_code",
+            (instrument_serial_number,),
+        )
+    if qc_product_id:
+        return db.fetch_all(
+            "SELECT l.*, p.product_name FROM qc_lots l "
+            "JOIN qc_products p ON p.qc_product_id = l.qc_product_id "
+            "WHERE l.qc_product_id = %s ORDER BY l.level_code",
+            (qc_product_id,),
+        )
+    return db.fetch_all(
+        "SELECT l.*, p.product_name FROM qc_lots l "
+        "JOIN qc_products p ON p.qc_product_id = l.qc_product_id "
+        "ORDER BY p.product_name, l.level_code"
+    )
+
+
+# ============================ 品管目標值 ============================ #
+@app.get("/api/qc-targets", summary="品管目標值（預設只列目前生效版本）")
+def list_qc_targets(
+    assay_id: str | None = Query(None),
+    qc_lot_id: str | None = Query(None),
+    instrument_serial_number: str | None = Query(None),
+    include_history: bool = Query(False, description="連同已收效的舊版本一起列出"),
+):
+    conds, params = [], []
+    if assay_id:
+        conds.append("t.assay_id = %s")
+        params.append(assay_id)
+    if qc_lot_id:
+        conds.append("t.qc_lot_id = %s")
+        params.append(qc_lot_id)
+    if instrument_serial_number:
+        conds.append("v.serial_number = %s")
+        params.append(instrument_serial_number)
+    if not include_history:
+        conds.append("t.effective_to IS NULL")
+    where = ("WHERE " + " AND ".join(conds)) if conds else ""
+    return db.fetch_all(
+        "SELECT t.*, v.serial_number, v.instrument_name, v.item_code, v.item_name, "
+        "       v.specimen_code, v.result_unit, "
+        "       l.lot_number, l.level_code, l.expiry_date, l.lot_status, "
+        "       l.parallel_test_done, p.product_name AS qc_product_name "
+        "FROM qc_target_values t "
+        "JOIN v_assay_catalog v ON v.assay_id = t.assay_id "
+        "JOIN qc_lots l ON l.qc_lot_id = t.qc_lot_id "
+        "JOIN qc_products p ON p.qc_product_id = t.qc_product_id "
+        f"{where} "
+        "ORDER BY v.serial_number, v.item_code, l.level_code, t.effective_from DESC",
+        tuple(params),
+    )
+
+
+@app.get("/api/qc-targets/pending-parallel-test", summary="待平測清單")
+def pending_parallel_test(instrument_serial_number: str | None = Query(None)):
+    """列出仍在用原廠值、尚未建立實驗室平測值的 assay × 批號。"""
+    cond, params = "", []
+    if instrument_serial_number:
+        cond = "AND v.serial_number = %s "
+        params.append(instrument_serial_number)
+    return db.fetch_all(
+        "SELECT t.qc_target_id, t.assay_id, t.qc_lot_id, t.target_mean, t.target_sd, "
+        "       v.serial_number, v.instrument_name, v.item_code, v.specimen_code, "
+        "       l.lot_number, l.level_code, l.expiry_date, l.parallel_test_done, "
+        "       p.product_name AS qc_product_name "
+        "FROM qc_target_values t "
+        "JOIN v_assay_catalog v ON v.assay_id = t.assay_id "
+        "JOIN qc_lots l ON l.qc_lot_id = t.qc_lot_id "
+        "JOIN qc_products p ON p.qc_product_id = t.qc_product_id "
+        "WHERE t.effective_to IS NULL AND t.target_source = 'MANUFACTURER' "
+        f"{cond}"
+        "ORDER BY v.serial_number, v.item_code, l.level_code",
+        tuple(params),
+    )
+
+
+# ============================ 品管結果查詢 ============================ #
+@app.get("/api/qc-results", summary="品管紀錄查詢")
+def list_qc_results(
+    date_from: str | None = Query(None),
+    date_to: str | None = Query(None),
+    section_name: str | None = Query(None),
+    instrument_serial_number: str | None = Query(None),
+    item_code: str | None = Query(None),
+    specimen_code: str | None = Query(None),
+    result_status: str | None = Query(None),
+    limit: int = Query(500, le=5000),
+):
+    conds, params = [], []
+    if date_from:
+        conds.append("run_at >= %s")
+        params.append(f"{date_from} 00:00:00")
+    if date_to:
+        conds.append("run_at < DATE_ADD(%s, INTERVAL 1 DAY)")
+        params.append(date_to)
+    if section_name:
+        conds.append("section_name = %s")
+        params.append(section_name)
+    if instrument_serial_number:
+        conds.append("serial_number = %s")
+        params.append(instrument_serial_number)
+    if item_code:
+        conds.append("item_code = %s")
+        params.append(item_code)
+    if specimen_code:
+        conds.append("specimen_code = %s")
+        params.append(specimen_code)
+    if result_status:
+        conds.append("result_status = %s")
+        params.append(result_status)
+    where = ("WHERE " + " AND ".join(conds)) if conds else ""
+    params.append(limit)
+    return db.fetch_all(
+        f"SELECT * FROM v_qc_result_detail {where} ORDER BY run_at DESC LIMIT %s",
+        tuple(params),
+    )
+
+
+@app.get("/api/qc-results/lj", summary="L-J chart 資料（依 assay + 品管批號分組）")
+def lj_series(
+    instrument_serial_number: str = Query(...),
+    item_code: str = Query(...),
+    specimen_code: str | None = Query(None),
+    date_from: str | None = Query(None),
+    date_to: str | None = Query(None),
+):
+    conds = ["serial_number = %s", "item_code = %s"]
+    params: list = [instrument_serial_number, item_code]
+    if specimen_code:
+        conds.append("specimen_code = %s")
+        params.append(specimen_code)
+    if date_from:
+        conds.append("run_at >= %s")
+        params.append(f"{date_from} 00:00:00")
+    if date_to:
+        conds.append("run_at < DATE_ADD(%s, INTERVAL 1 DAY)")
+        params.append(date_to)
+    rows = db.fetch_all(
+        "SELECT * FROM v_qc_result_detail WHERE " + " AND ".join(conds) + " ORDER BY run_at",
+        tuple(params),
+    )
+    # 依「品管液批號 + 濃度」分組，各成一張圖
+    series: dict[str, dict] = {}
+    for r in rows:
+        key = f"{r['qc_product_name']} · {r['qc_level']} · {r['qc_lot_number']}"
+        s = series.setdefault(key, {
+            "label": key,
+            "qc_product_name": r["qc_product_name"],
+            "qc_level": r["qc_level"],
+            "qc_lot_number": r["qc_lot_number"],
+            "unit": r["unit_snapshot"],
+            "mean": r["target_mean_snapshot"],
+            "sd": r["target_sd_snapshot"],
+            "points": [],
+        })
+        s["points"].append({
+            "run_at": r["run_at"], "value": r["result_value"], "z": r["z_score"],
+            "status": r["result_status"], "westgard": r["westgard_flags"],
+        })
+    return list(series.values())
+
+
+# ============================ Dashboard ============================ #
+@app.get("/api/dashboard", summary="儀表板統計")
+def dashboard(target_date: str | None = Query(None, description="預設今天")):
+    day = target_date or _today()
+    rows = db.fetch_all(
+        "SELECT * FROM v_qc_result_detail "
+        "WHERE run_at >= %s AND run_at < DATE_ADD(%s, INTERVAL 1 DAY)",
+        (f"{day} 00:00:00", day),
+    )
+
+    passed = [r for r in rows if r["result_status"] == "PASS"]
+    warning = [r for r in rows if r["result_status"] == "WARNING"]
+    failed = [r for r in rows if r["result_status"] == "FAIL"]
+    violations = [r for r in rows if r.get("westgard_flags")]
+
+    by_instrument: dict[str, dict] = {}
+    for r in rows:
+        d = by_instrument.setdefault(r["instrument_name"], {"total": 0, "fail": 0})
+        d["total"] += 1
+        if r["result_status"] == "FAIL":
+            d["fail"] += 1
+
+    rule_counts: dict[str, int] = {}
+    for r in violations:
+        flags = r["westgard_flags"]
+        for rule in (flags if isinstance(flags, list) else [flags]):
+            if rule:
+                rule_counts[str(rule)] = rule_counts.get(str(rule), 0) + 1
+
+    return {
+        "date": day,
+        "total_qc": len(rows),
+        "pass_count": len(passed),
+        "warning_count": len(warning),
+        "fail_count": len(failed),
+        "westgard_violation_count": len(violations),
+        "pass_rate": round(len(passed) / len(rows) * 100, 1) if rows else 0.0,
+        "by_instrument": by_instrument,
+        "rule_counts": rule_counts,
+        "violations": [
+            {
+                "instrument_name": r["instrument_name"],
+                "serial_number": r["serial_number"],
+                "item_code": r["item_code"],
+                "specimen_code": r["specimen_code"],
+                "qc_level": r["qc_level"],
+                "z_score": r["z_score"],
+                "westgard_flags": r["westgard_flags"],
+                "result_status": r["result_status"],
+                "run_at": r["run_at"],
+                "note": r["note"],
+            }
+            for r in violations
+        ],
+    }
+
+
+# ============================ 主檔關聯圖 ============================ #
+@app.get("/api/er-graph", summary="某儀器的主檔關聯圖")
+def er_graph(instrument_serial_number: str = Query(...)):
+    """回傳 儀器 → 品管液 → 試劑 → assay（項目×檢體）的節點與邊。"""
     inst = db.fetch_one(
-        "SELECT i.*, g.group_name AS lab_group "
-        "FROM instruments i JOIN lab_group g ON i.group_id = g.group_id "
-        "WHERE i.serial_number = %s",
+        "SELECT i.*, s.section_name FROM instruments i "
+        "JOIN lab_sections s ON s.section_id = i.section_id WHERE i.serial_number = %s",
         (instrument_serial_number,),
     )
     if not inst:
         raise HTTPException(status_code=404, detail=f"查無此儀器：{instrument_serial_number}")
 
     sn = (instrument_serial_number,)
-    items = db.fetch_all(
-        "SELECT item_id, item_code, item_name, unit, sort_order FROM items "
-        "WHERE instrument_serial_number = %s AND active = TRUE ORDER BY sort_order, item_code",
+    assays = db.fetch_all(
+        "SELECT assay_id, item_code, item_name, specimen_code, result_unit "
+        "FROM v_assay_catalog WHERE serial_number = %s AND active = TRUE "
+        "ORDER BY item_code, specimen_code",
         sn,
     )
     reagents = db.fetch_all(
-        "SELECT reagent_id, reagent_name, test_item, lot_number, in_stock, "
-        "parallel_test_done, expiry_date FROM reagent "
-        "WHERE instrument_serial_number = %s AND active = TRUE ORDER BY reagent_name",
+        "SELECT DISTINCT p.reagent_product_id, p.product_name, p.manufacturer "
+        "FROM assay_reagent_requirements r "
+        "JOIN reagent_products p ON p.reagent_product_id = r.reagent_product_id "
+        "JOIN instrument_assays a ON a.assay_id = r.assay_id "
+        "JOIN instruments i ON i.instrument_id = a.instrument_id "
+        "WHERE i.serial_number = %s ORDER BY p.product_name",
         sn,
     )
     qcs = db.fetch_all(
-        "SELECT q.reagent_qc_id, q.test_item, q.qc_level, q.qc_lot_number, q.unit, "
-        "q.parallel_test_done, q.in_use, q.manufacturer_mean, q.manufacturer_sd, "
-        "q.new_standard_mean, q.new_standard_sd, s.code AS specimen_code, s.name AS specimen_name "
-        "FROM reagent_qc q LEFT JOIN specimen_type s ON s.specimen_type_id = q.specimen_type_id "
-        "WHERE q.instrument_serial_number = %s AND q.active = TRUE "
-        "ORDER BY q.test_item, q.qc_level",
+        "SELECT DISTINCT p.qc_product_id, p.product_name, p.manufacturer "
+        "FROM assay_qc_requirements q "
+        "JOIN qc_products p ON p.qc_product_id = q.qc_product_id "
+        "JOIN instrument_assays a ON a.assay_id = q.assay_id "
+        "JOIN instruments i ON i.instrument_id = a.instrument_id "
+        "WHERE i.serial_number = %s ORDER BY p.product_name",
+        sn,
+    )
+    # 每個試劑/品管液產品目前使用中的批號，顯示在節點上
+    for r in reagents:
+        r["lots"] = db.fetch_all(
+            "SELECT lot_number, expiry_date, lot_status, parallel_test_done "
+            "FROM reagent_lots WHERE reagent_product_id = %s "
+            "AND lot_status IN ('IN_USE','AVAILABLE') ORDER BY expiry_date",
+            (r["reagent_product_id"],),
+        )
+    for q in qcs:
+        q["lots"] = db.fetch_all(
+            "SELECT lot_number, level_code, expiry_date, lot_status, parallel_test_done "
+            "FROM qc_lots WHERE qc_product_id = %s "
+            "AND lot_status IN ('IN_USE','AVAILABLE') ORDER BY level_code",
+            (q["qc_product_id"],),
+        )
+
+    reagent_assay = db.fetch_all(
+        "SELECT r.reagent_product_id, r.assay_id, r.reagent_role "
+        "FROM assay_reagent_requirements r "
+        "JOIN instrument_assays a ON a.assay_id = r.assay_id "
+        "JOIN instruments i ON i.instrument_id = a.instrument_id "
+        "WHERE i.serial_number = %s",
+        sn,
+    )
+    qc_assay = db.fetch_all(
+        "SELECT q.qc_product_id, q.assay_id FROM assay_qc_requirements q "
+        "JOIN instrument_assays a ON a.assay_id = q.assay_id "
+        "JOIN instruments i ON i.instrument_id = a.instrument_id "
+        "WHERE i.serial_number = %s",
+        sn,
+    )
+    # 品管液 → 試劑：兩者同時服務同一個 assay 即視為相關
+    qc_reagent = db.fetch_all(
+        "SELECT DISTINCT q.qc_product_id, r.reagent_product_id "
+        "FROM assay_qc_requirements q "
+        "JOIN assay_reagent_requirements r ON r.assay_id = q.assay_id "
+        "JOIN instrument_assays a ON a.assay_id = q.assay_id "
+        "JOIN instruments i ON i.instrument_id = a.instrument_id "
+        "WHERE i.serial_number = %s",
         sn,
     )
 
-    # 中介表關聯（限縮在此儀器的主檔範圍內）
-    qc_reagent = db.fetch_all(
-        "SELECT m.reagent_qc_id, m.reagent_id FROM qc_reagent_map m "
-        "JOIN reagent_qc q ON q.reagent_qc_id = m.reagent_qc_id "
-        "JOIN reagent r ON r.reagent_id = m.reagent_id "
-        "WHERE q.instrument_serial_number = %s AND r.instrument_serial_number = %s",
-        (instrument_serial_number, instrument_serial_number),
-    )
-    reagent_item = db.fetch_all(
-        "SELECT m.reagent_id, m.item_id FROM reagent_item_map m "
-        "JOIN reagent r ON r.reagent_id = m.reagent_id "
-        "JOIN items i ON i.item_id = m.item_id "
-        "WHERE r.instrument_serial_number = %s AND i.instrument_serial_number = %s",
-        (instrument_serial_number, instrument_serial_number),
-    )
-    reagent_specimen = db.fetch_all(
-        "SELECT m.reagent_id, s.code, s.name FROM reagent_specimen_map m "
-        "JOIN reagent r ON r.reagent_id = m.reagent_id "
-        "JOIN specimen_type s ON s.specimen_type_id = m.specimen_type_id "
-        "WHERE r.instrument_serial_number = %s",
-        (instrument_serial_number,),
-    )
-
-    # 把檢體代碼掛回各試劑，方便前端直接顯示
-    spec_by_reagent: dict[str, list[str]] = {}
-    for r in reagent_specimen:
-        spec_by_reagent.setdefault(r["reagent_id"], []).append(r["code"])
-    for r in reagents:
-        r["specimen_codes"] = spec_by_reagent.get(r["reagent_id"], [])
-
     return {
         "instrument": inst,
-        "items": items,
+        "assays": assays,
         "reagents": reagents,
-        "reagent_qcs": qcs,
+        "qc_products": qcs,
         "edges": {
             "qc_reagent": qc_reagent,
-            "reagent_item": reagent_item,
+            "reagent_assay": reagent_assay,
+            "qc_assay": qc_assay,
         },
         "counts": {
-            "items": len(items),
+            "assays": len(assays),
             "reagents": len(reagents),
-            "reagent_qcs": len(qcs),
-            "qc_reagent_links": len(qc_reagent),
-            "reagent_item_links": len(reagent_item),
+            "qc_products": len(qcs),
+            "reagent_assay_links": len(reagent_assay),
+            "qc_assay_links": len(qc_assay),
         },
     }
 
 
-@app.get("/api/test-items")
-def list_test_items(instrument_serial_number: str | None = Query(None)):
-    """回傳某儀器（或全部）有紀錄的檢驗項目清單，供 L-J chart 選單使用。"""
-    if instrument_serial_number:
-        rows = db.fetch_all(
-            "SELECT DISTINCT test_item, test_item_full_name FROM qc_records "
-            "WHERE instrument_serial_number = %s ORDER BY test_item",
-            (instrument_serial_number,),
-        )
-    else:
-        rows = db.fetch_all(
-            "SELECT DISTINCT test_item, test_item_full_name FROM qc_records "
-            "ORDER BY test_item"
-        )
-    return [{"test_item": r["test_item"], "test_item_full_name": r.get("test_item_full_name")} for r in rows]
-
-
-@app.get("/api/records")
-def list_records(
-    date_from: str | None = Query(None, description="起始日期 YYYY-MM-DD"),
-    date_to: str | None = Query(None, description="結束日期 YYYY-MM-DD"),
-    qc_date: str | None = Query(None, description="單一日期（向下相容）"),
-    lab_group: str | None = Query(None, description="組別"),
-    instrument_serial_number: str | None = Query(None, description="儀器 S/N"),
-    test_item: str | None = Query(None),
-    limit: int = Query(500, le=2000),
-):
-    conditions = []
-    params: list = []
-
-    if qc_date:
-        conditions.append("qc_date = %s")
-        params.append(qc_date)
-    if date_from:
-        conditions.append("qc_date >= %s")
-        params.append(date_from)
-    if date_to:
-        conditions.append("qc_date <= %s")
-        params.append(date_to)
-    if instrument_serial_number:
-        conditions.append("instrument_serial_number = %s")
-        params.append(instrument_serial_number)
-    elif lab_group:
-        serials = _serials_in_group(lab_group)
-        if serials:
-            placeholders = ", ".join(["%s"] * len(serials))
-            conditions.append(f"instrument_serial_number IN ({placeholders})")
-            params.extend(serials)
-        else:
-            return []
-    if test_item:
-        conditions.append("test_item = %s")
-        params.append(test_item)
-
-    where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
-    sql = f"SELECT * FROM qc_records {where} ORDER BY qc_date DESC, qc_time DESC LIMIT %s"
-    params.append(limit)
-    return db.fetch_all(sql, tuple(params))
-
-
-@app.post("/api/records")
-def create_record(rec: QCRecordIn):
-    z = _compute_z(rec.qc_result_value, rec.lot_mean, rec.lot_standard_deviation)
-
-    history = db.fetch_all(
-        "SELECT z_score, qc_date, qc_time FROM qc_records "
-        "WHERE instrument_serial_number = %s AND test_item = %s AND qc_level = %s "
-        "ORDER BY qc_date, qc_time",
-        (rec.instrument_serial_number, rec.test_item, rec.qc_level),
-    )
-    z_series = [h["z_score"] for h in history if h["z_score"] is not None]
-    if z is not None:
-        z_series.append(z)
-
-    rules = westgard.evaluate_series(z_series)
-    status = westgard.status_from_rules(rules)
-    violation = ", ".join(rules) if rules else None
-
-    payload = rec.model_dump()
-    # qc_records 已移除 department 欄位，改以 group_id 關聯 lab_group；由儀器帶出所屬組別
-    payload.pop("department", None)
-    inst = db.fetch_one(
-        "SELECT group_id FROM instruments WHERE serial_number = %s",
-        (rec.instrument_serial_number,),
-    )
-    payload["group_id"] = inst["group_id"] if inst else None
-    payload.update(
-        {
-            "z_score": z,
-            "qc_status": status,
-            "westgard_rule_violation": violation,
-        }
-    )
-    if not payload.get("remark"):
-        payload["remark"] = (
-            "Within acceptable range" if status == "Pass" else f"Westgard 違規: {violation}"
-        )
-
-    row = db.insert_returning("qc_records", payload)
-    if not row:
-        raise HTTPException(status_code=500, detail="新增失敗")
-    return row
-
-
-@app.get("/api/dashboard")
-def dashboard(target_date: str | None = Query(None, description="預設今天")):
-    day = target_date or _today_str()
-    rows = db.fetch_all("SELECT * FROM qc_records WHERE qc_date = %s", (day,))
-
-    total = len(rows)
-    failed = [r for r in rows if r["qc_status"] == "Fail"]
-    warning = [r for r in rows if r["qc_status"] == "Warning"]
-    passed = [r for r in rows if r["qc_status"] == "Pass"]
-    westgard_violations = [r for r in rows if r.get("westgard_rule_violation")]
-
-    pass_rate = round(len(passed) / total * 100, 1) if total else 0.0
-
-    by_instrument: dict[str, dict] = {}
-    for r in rows:
-        name = r["instrument_name"]
-        d = by_instrument.setdefault(name, {"total": 0, "fail": 0})
-        d["total"] += 1
-        if r["qc_status"] == "Fail":
-            d["fail"] += 1
-
-    rule_counts: dict[str, int] = {}
-    for r in westgard_violations:
-        for rule in str(r["westgard_rule_violation"]).split(","):
-            rule = rule.strip()
-            if rule:
-                rule_counts[rule] = rule_counts.get(rule, 0) + 1
-
-    return {
-        "date": day,
-        "total_qc": total,
-        "pass_count": len(passed),
-        "warning_count": len(warning),
-        "fail_count": len(failed),
-        "westgard_violation_count": len(westgard_violations),
-        "pass_rate": pass_rate,
-        "by_instrument": by_instrument,
-        "rule_counts": rule_counts,
-        "violations": [
-            {
-                "instrument_name": r["instrument_name"],
-                "test_item": r["test_item"],
-                "qc_level": r["qc_level"],
-                "z_score": r["z_score"],
-                "westgard_rule_violation": r["westgard_rule_violation"],
-                "qc_status": r["qc_status"],
-                "qc_time": r["qc_time"],
-                "remark": r["remark"],
-            }
-            for r in westgard_violations
-        ],
-    }
-
-
+# ============================ AI 判讀 ============================ #
 class AIInterpretIn(BaseModel):
-    lab_group: str | None = None
+    section_name: str | None = None
     instrument_serial_number: str | None = None
+    item_code: str | None = None
     date_from: str | None = None
     date_to: str | None = None
-    test_item: str | None = None
 
 
 def _load_guide() -> str:
@@ -364,73 +559,47 @@ def _load_guide() -> str:
         return "你是一位醫學檢驗品保專家，請依 Westgard 多規則判讀品管數據，並以繁體中文回覆。"
 
 
-def _format_records_for_ai(rows: list[dict]) -> str:
+def _format_for_ai(rows: list[dict]) -> str:
     header = (
-        "| 日期 | 時間 | 儀器 | S/N | 項目 | 濃度 | 結果 | 單位 | 均值 | SD | Z-score | 狀態 | Westgard |\n"
-        "|------|------|------|-----|------|------|------|------|------|----|---------|------|----------|\n"
+        "| 時間 | 儀器 | 項目 | 檢體 | 品管液 | 濃度 | 批號 | 結果 | 單位 | Mean | SD | Z | 狀態 | Westgard |\n"
+        "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|\n"
     )
     lines = []
     for r in rows:
+        flags = r.get("westgard_flags")
+        flags = ", ".join(flags) if isinstance(flags, list) else (flags or "-")
         lines.append(
-            f"| {r['qc_date']} | {r.get('qc_time','')} | {r['instrument_name']} | "
-            f"{r['instrument_serial_number']} | {r['test_item']} | {r.get('qc_level','')} | "
-            f"{r.get('qc_result_value','')} | {r.get('unit','')} | {r.get('lot_mean','')} | "
-            f"{r.get('lot_standard_deviation','')} | {r.get('z_score','')} | {r['qc_status']} | "
-            f"{r.get('westgard_rule_violation') or '-'} |"
+            f"| {r['run_at']} | {r['instrument_name']} | {r['item_code']} | {r['specimen_code']} | "
+            f"{r['qc_product_name']} | {r['qc_level']} | {r['qc_lot_number']} | "
+            f"{r['result_value']} | {r.get('unit_snapshot') or ''} | "
+            f"{r.get('target_mean_snapshot') or ''} | {r.get('target_sd_snapshot') or ''} | "
+            f"{r.get('z_score') or ''} | {r['result_status']} | {flags} |"
         )
     return header + "\n".join(lines)
 
 
-@app.post("/api/ai-interpret")
+@app.post("/api/ai-interpret", summary="AI 品管判讀")
 def ai_interpret(req: AIInterpretIn):
-    """提取所選品管資料，連線 Claude 進行 Westgard 規則 AI 判讀。"""
     if not ANTHROPIC_API_KEY:
         raise HTTPException(
             status_code=400,
-            detail="尚未設定 ANTHROPIC_API_KEY，請於 backend/.env 填入 Anthropic API 金鑰後重啟伺服器。",
+            detail="尚未設定 ANTHROPIC_API_KEY，請於 backend/.env 填入後重啟伺服器。",
         )
-
-    conditions = []
-    params: list = []
-
-    if req.date_from:
-        conditions.append("qc_date >= %s")
-        params.append(req.date_from)
-    if req.date_to:
-        conditions.append("qc_date <= %s")
-        params.append(req.date_to)
-    if req.instrument_serial_number:
-        conditions.append("instrument_serial_number = %s")
-        params.append(req.instrument_serial_number)
-    elif req.lab_group:
-        serials = _serials_in_group(req.lab_group)
-        if serials:
-            placeholders = ", ".join(["%s"] * len(serials))
-            conditions.append(f"instrument_serial_number IN ({placeholders})")
-            params.extend(serials)
-        else:
-            raise HTTPException(status_code=404, detail="此條件下查無品管資料，無法判讀。")
-    if req.test_item:
-        conditions.append("test_item = %s")
-        params.append(req.test_item)
-
-    where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
-    sql = f"SELECT * FROM qc_records {where} ORDER BY qc_date, qc_time LIMIT 1000"
-    rows = db.fetch_all(sql, tuple(params))
-
+    rows = list_qc_results(
+        date_from=req.date_from, date_to=req.date_to, section_name=req.section_name,
+        instrument_serial_number=req.instrument_serial_number, item_code=req.item_code,
+        specimen_code=None, result_status=None, limit=1000,
+    )
     if not rows:
         raise HTTPException(status_code=404, detail="此條件下查無品管資料，無法判讀。")
 
-    guide = _load_guide()
     scope = (
-        f"組別: {req.lab_group or '全部'}｜儀器 S/N: {req.instrument_serial_number or '全部'}｜"
-        f"檢驗項目: {req.test_item or '全部'}｜期間: {req.date_from or '不限'} ~ {req.date_to or '不限'}"
+        f"組別: {req.section_name or '全部'}｜儀器: {req.instrument_serial_number or '全部'}｜"
+        f"項目: {req.item_code or '全部'}｜期間: {req.date_from or '不限'} ~ {req.date_to or '不限'}"
     )
-    data_md = _format_records_for_ai(rows)
-    user_prompt = (
+    prompt = (
         f"以下是需要判讀的品管數據（共 {len(rows)} 筆）。\n\n"
-        f"**查詢範圍**：{scope}\n\n"
-        f"{data_md}\n\n"
+        f"**查詢範圍**：{scope}\n\n{_format_for_ai(rows)}\n\n"
         "請依指南進行專業判讀並提出矯正建議。"
     )
 
@@ -442,14 +611,9 @@ def ai_interpret(req: AIInterpretIn):
             model=AI_MODEL,
             max_tokens=8000,
             thinking={"type": "adaptive"},
-            system=[
-                {
-                    "type": "text",
-                    "text": guide,
-                    "cache_control": {"type": "ephemeral"},
-                }
-            ],
-            messages=[{"role": "user", "content": user_prompt}],
+            system=[{"type": "text", "text": _load_guide(),
+                     "cache_control": {"type": "ephemeral"}}],
+            messages=[{"role": "user", "content": prompt}],
         )
     except anthropic.APIStatusError as e:
         raise HTTPException(status_code=502, detail=f"Claude API 錯誤 ({e.status_code}): {e.message}")
@@ -461,18 +625,17 @@ def ai_interpret(req: AIInterpretIn):
     if message.stop_reason == "refusal":
         raise HTTPException(status_code=400, detail="模型基於安全考量婉拒此請求。")
 
-    text = "".join(b.text for b in message.content if b.type == "text")
     return {
         "record_count": len(rows),
         "scope": scope,
         "model": AI_MODEL,
-        "interpretation": text,
+        "interpretation": "".join(b.text for b in message.content if b.type == "text"),
     }
 
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "time": datetime.now().isoformat()}
+    return {"status": "ok", "version": "3.0.0", "time": datetime.now().isoformat()}
 
 
 # ----------------------------- 靜態前端 ----------------------------- #

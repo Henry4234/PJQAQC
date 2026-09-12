@@ -147,8 +147,8 @@ async function loadInstruments() {
   const ljGroup = document.getElementById("lj-group");
   ljGroup.innerHTML = groups.map((g) => `<option value="${g}">${g}</option>`).join("");
 
-  // 關聯圖 / 三個管理頁：組別選單（需指定單一儀器）
-  ["er-group", "mg-item-group", "mg-reagent-group", "mg-rqc-group"].forEach((gid) => {
+  // 關聯圖 / 三個管理頁 / 新批號頁：組別選單（需指定單一儀器）
+  ["er-group", "mg-item-group", "mg-reagent-group", "mg-rqc-group", "lot-group"].forEach((gid) => {
     const sel = document.getElementById(gid);
     const prev = sel.value;
     sel.innerHTML = groups.map((g) => `<option value="${g}">${g}</option>`).join("");
@@ -181,6 +181,8 @@ async function loadInstruments() {
     fillInstrumentSelect(instId, sel.value || groups[0] || "", false);
   });
   loadReagentItemOptions();
+  loadRQCItemOptions();
+  reloadLinkOptions("all");
   syncAddInstrumentMeta();
 }
 
@@ -225,10 +227,11 @@ document.getElementById("add-instrument").addEventListener("change", syncAddInst
   });
 });
 
-// 新增試劑：第三層選單（儀器 → 該儀器的檢驗項目，來自 items 主檔）
-async function loadReagentItemOptions() {
-  const sn = document.getElementById("reg-reagent-instrument").value;
-  const sel = document.getElementById("reg-reagent-item");
+// 第三層選單共用：依所選儀器載入該儀器的檢驗項目（來自 items 主檔）
+// option 上帶 data-full-name，供「項目全名」自動帶入使用
+async function loadItemOptionsFor(instrumentSelectId, itemSelectId) {
+  const sn = document.getElementById(instrumentSelectId).value;
+  const sel = document.getElementById(itemSelectId);
   if (!sn) {
     sel.innerHTML = `<option value="" disabled selected>（請先選擇儀器）</option>`;
     return;
@@ -237,16 +240,250 @@ async function loadReagentItemOptions() {
     const items = await api(`/api/items?instrument_serial_number=${encodeURIComponent(sn)}`);
     sel.innerHTML = items.length
       ? items
-          .map((i) => `<option value="${i.item_code}">${i.item_code}${i.item_name ? "（" + i.item_name + "）" : ""}</option>`)
+          .map((i) =>
+            `<option value="${esc(i.item_code)}" data-full-name="${esc(i.item_name || "")}" data-unit="${esc(i.unit || "")}">` +
+            `${esc(i.item_code)}${i.item_name ? "（" + esc(i.item_name) + "）" : ""}</option>`
+          )
           .join("")
       : `<option value="" disabled selected>（此儀器尚無項目，請先新增檢驗項目）</option>`;
   } catch {
     sel.innerHTML = `<option value="" disabled selected>（項目載入失敗）</option>`;
   }
 }
-// 組別 / 儀器變動時重載第三層（組別 listener 先於此註冊，儀器清單已先更新）
+
+// 新增試劑：組別 → 儀器 → 檢驗項目
+const loadReagentItemOptions = () =>
+  loadItemOptionsFor("reg-reagent-instrument", "reg-reagent-item");
 document.getElementById("reg-reagent-group").addEventListener("change", loadReagentItemOptions);
 document.getElementById("reg-reagent-instrument").addEventListener("change", loadReagentItemOptions);
+
+// ---------- 可檢索的下拉複選元件 ----------
+// 用法：msRender(containerId, options[{value,label}], placeholder, selected[])
+// 取值：checkedLinks(containerId)
+function msRender(containerId, options, placeholder = "（無可選項目）", selected = []) {
+  const box = document.getElementById(containerId);
+  box.classList.add("ms");
+  if (!options.length) {
+    box.classList.remove("ms");
+    box.innerHTML = `<span class="check-empty">${esc(placeholder)}</span>`;
+    return;
+  }
+  const picked = new Set(selected || []);
+  box.innerHTML = `
+    <button type="button" class="ms-toggle">
+      <span class="ms-label empty">請選擇…</span>
+      <span class="ms-count" hidden>0</span>
+      <span class="ms-caret">▾</span>
+    </button>
+    <div class="ms-panel">
+      <div class="ms-search-wrap">
+        <input type="text" class="ms-search" placeholder="輸入關鍵字檢索…" />
+      </div>
+      <div class="ms-bulk">
+        <button type="button" data-all>全選（符合檢索）</button>
+        <button type="button" data-none>清除選取</button>
+        <span class="ms-shown"></span>
+      </div>
+      <div class="ms-options">
+        ${options.map((o) =>
+          `<label data-text="${esc((o.label || "").toLowerCase())}" data-raw="${esc(o.label)}">
+             <input type="checkbox" data-link value="${esc(o.value)}" ${picked.has(o.value) ? "checked" : ""} />
+             <span>${esc(o.label)}</span>
+           </label>`).join("")}
+      </div>
+    </div>`;
+
+  const toggle = box.querySelector(".ms-toggle");
+  const panel = box.querySelector(".ms-panel");
+  const search = box.querySelector(".ms-search");
+  const labels = [...box.querySelectorAll(".ms-options label")];
+  const shown = box.querySelector(".ms-shown");
+  const optBox = box.querySelector(".ms-options");
+  let active = -1; // 鍵盤游標位置（對應可見項目）
+
+  // 收合列顯示已選項目與數量
+  const refresh = () => {
+    const picked = [...box.querySelectorAll("[data-link]:checked")];
+    const lab = box.querySelector(".ms-label");
+    const cnt = box.querySelector(".ms-count");
+    if (picked.length) {
+      lab.textContent = picked.map((c) => c.parentElement.dataset.raw).join("、");
+      lab.classList.remove("empty");
+      cnt.hidden = false;
+      cnt.textContent = picked.length;
+    } else {
+      lab.textContent = "請選擇…";
+      lab.classList.add("empty");
+      cnt.hidden = true;
+    }
+  };
+
+  const visible = () => labels.filter((l) => !l.hidden);
+
+  const setActive = (i) => {
+    const vis = visible();
+    labels.forEach((l) => l.classList.remove("ms-active"));
+    if (!vis.length) { active = -1; return; }
+    active = Math.max(0, Math.min(i, vis.length - 1));
+    vis[active].classList.add("ms-active");
+    vis[active].scrollIntoView({ block: "nearest" });
+  };
+
+  // 依關鍵字過濾，並在符合處加上 <mark> 標示
+  const filter = () => {
+    const q = search.value.trim().toLowerCase();
+    let n = 0;
+    labels.forEach((l) => {
+      const raw = l.dataset.raw;
+      const hit = !q || l.dataset.text.includes(q);
+      l.hidden = !hit;
+      const span = l.querySelector("span");
+      if (hit && q) {
+        const at = l.dataset.text.indexOf(q);
+        span.innerHTML =
+          esc(raw.slice(0, at)) + "<mark>" + esc(raw.slice(at, at + q.length)) + "</mark>" +
+          esc(raw.slice(at + q.length));
+      } else {
+        span.textContent = raw;
+      }
+      if (hit) n++;
+    });
+    shown.textContent = q ? `符合 ${n} / ${labels.length} 項` : `共 ${labels.length} 項`;
+    if (!n) {
+      if (!optBox.querySelector(".ms-none"))
+        optBox.insertAdjacentHTML("beforeend", `<div class="ms-none">查無符合「${esc(search.value)}」的項目</div>`);
+      else optBox.querySelector(".ms-none").textContent = `查無符合「${search.value}」的項目`;
+      optBox.querySelector(".ms-none").hidden = false;
+    } else if (optBox.querySelector(".ms-none")) {
+      optBox.querySelector(".ms-none").hidden = true;
+    }
+    setActive(0);
+  };
+
+  const open = (yes) => {
+    box.classList.toggle("open", yes);
+    if (yes) { search.value = ""; filter(); search.focus(); }
+  };
+
+  toggle.addEventListener("click", () => open(!box.classList.contains("open")));
+  search.addEventListener("input", filter);
+
+  // 鍵盤操作：↑↓ 移動、Enter 勾選/取消、Esc 關閉
+  search.addEventListener("keydown", (e) => {
+    const vis = visible();
+    if (e.key === "ArrowDown") { e.preventDefault(); setActive(active + 1); }
+    else if (e.key === "ArrowUp") { e.preventDefault(); setActive(active - 1); }
+    else if (e.key === "Enter") {
+      e.preventDefault();
+      if (vis[active]) {
+        const cb = vis[active].querySelector("input");
+        cb.checked = !cb.checked;
+        refresh();
+      }
+    } else if (e.key === "Escape") { e.preventDefault(); open(false); toggle.focus(); }
+  });
+
+  panel.addEventListener("click", (e) => e.stopPropagation()); // 面板內點擊不關閉
+  document.addEventListener("click", (e) => {
+    if (!box.contains(e.target)) box.classList.remove("open");
+  });
+  box.addEventListener("change", refresh);
+  box.querySelector("[data-all]").addEventListener("click", () => {
+    visible().forEach((l) => (l.querySelector("input").checked = true));
+    refresh();
+  });
+  box.querySelector("[data-none]").addEventListener("click", () => {
+    labels.forEach((l) => (l.querySelector("input").checked = false));
+    refresh();
+  });
+  filter();
+  refresh();
+}
+
+// 中介表關聯的候選來源設定（新增頁與管理頁編輯對話框共用）
+const LINK_KINDS = {
+  items: {
+    path: "/api/items",
+    key: "item_id",
+    label: (r) => `${r.item_code}${r.item_name ? "（" + r.item_name + "）" : ""}`,
+    empty: "此儀器尚無檢驗項目，可先於「新增檢驗項目」建立",
+  },
+  reagents: {
+    path: "/api/reagents",
+    key: "reagent_id",
+    label: (r) => `${r.reagent_name}（${r.lot_number}）`,
+    empty: "此儀器尚無試劑，可先於「新增試劑」建立",
+  },
+  qcs: {
+    path: "/api/reagent-qc",
+    key: "reagent_qc_id",
+    label: (r) => `${r.test_item} ${r.qc_level}${r.qc_lot_number ? "（" + r.qc_lot_number + "）" : "（尚未進批）"}`,
+    empty: "此儀器尚無品管液，可先於「新增品管液」建立",
+  },
+};
+
+// 取某台儀器可關聯的候選清單
+async function fetchLinkOptions(kind, sn) {
+  const conf = LINK_KINDS[kind];
+  const rows = await api(`${conf.path}?instrument_serial_number=${encodeURIComponent(sn)}`);
+  return rows.map((r) => ({ value: r[conf.key], label: conf.label(r) }));
+}
+
+// 依所選儀器載入候選項目，value 為該主檔的 UUID
+async function loadLinkCheckboxes(containerId, instrumentSelectId, kind) {
+  const box = document.getElementById(containerId);
+  const sn = document.getElementById(instrumentSelectId).value;
+  if (!sn) {
+    box.classList.remove("ms");
+    box.innerHTML = `<span class="check-empty">請先選擇儀器</span>`;
+    return;
+  }
+  try {
+    msRender(containerId, await fetchLinkOptions(kind, sn), LINK_KINDS[kind].empty);
+  } catch (e) {
+    box.classList.remove("ms");
+    box.innerHTML = `<span class="check-empty">載入失敗：${esc(e.message)}</span>`;
+  }
+}
+
+// 取出某複選群組已勾選的 ID
+const checkedLinks = (containerId) =>
+  [...document.querySelectorAll(`#${containerId} [data-link]:checked`)].map((c) => c.value);
+
+// 新增品管液：組別 → 儀器 → 檢驗項目，並自動帶入項目全名
+async function loadRQCItemOptions() {
+  await loadItemOptionsFor("reg-rqc-instrument", "reg-rqc-item");
+  syncRQCItemFullName();
+}
+// 依選取的檢驗項目帶入項目全名（仍可手動修改）
+function syncRQCItemFullName() {
+  const sel = document.getElementById("reg-rqc-item");
+  const opt = sel.selectedOptions[0];
+  document.getElementById("reg-rqc-item-full").value = opt ? opt.dataset.fullName || "" : "";
+}
+document.getElementById("reg-rqc-group").addEventListener("change", loadRQCItemOptions);
+document.getElementById("reg-rqc-instrument").addEventListener("change", loadRQCItemOptions);
+document.getElementById("reg-rqc-item").addEventListener("change", syncRQCItemFullName);
+
+// 三個新增頁的中介表關聯複選清單：隨所選儀器連動
+function reloadLinkOptions(page) {
+  if (page === "item" || page === "all")
+    loadLinkCheckboxes("reg-item-reagents", "reg-item-instrument", "reagents");
+  if (page === "reagent" || page === "all") {
+    loadLinkCheckboxes("reg-reagent-items", "reg-reagent-instrument", "items");
+    loadLinkCheckboxes("reg-reagent-qcs", "reg-reagent-instrument", "qcs");
+  }
+  if (page === "rqc" || page === "all")
+    loadLinkCheckboxes("reg-rqc-reagents", "reg-rqc-instrument", "reagents");
+}
+[
+  ["reg-item-group", "reg-item-instrument", "item"],
+  ["reg-reagent-group", "reg-reagent-instrument", "reagent"],
+  ["reg-rqc-group", "reg-rqc-instrument", "rqc"],
+].forEach(([groupId, instId, page]) => {
+  document.getElementById(groupId).addEventListener("change", () => reloadLinkOptions(page));
+  document.getElementById(instId).addEventListener("change", () => reloadLinkOptions(page));
+});
 
 // ---------- Records ----------
 async function loadRecords() {
@@ -707,12 +944,14 @@ async function loadLabGroupOptions() {
 async function loadSpecimenOptions() {
   const types = await api("/api/specimen-types");
   SPECIMEN_TYPES = types; // 管理頁編輯對話框共用
-  document.getElementById("reg-reagent-specimens").innerHTML = types
-    .map((s) => `<label><input type="checkbox" value="${s.code}" />${s.code}（${s.name}）</label>`)
-    .join("");
-  document.getElementById("reg-rqc-specimen").innerHTML = types
-    .map((s) => `<option value="${s.code}">${s.code}（${s.name}）</option>`)
-    .join("");
+  msRender(
+    "reg-reagent-specimens",
+    types.map((s) => ({ value: s.code, label: `${s.code}（${s.name}）` })),
+    "尚無檢體類別"
+  );
+  const opts = types.map((s) => `<option value="${s.code}">${s.code}（${s.name}）</option>`).join("");
+  document.getElementById("reg-rqc-specimen").innerHTML = opts;
+  document.getElementById("lot-specimen").innerHTML = opts;
 }
 
 async function loadSpecimenTable() {
@@ -735,9 +974,20 @@ function resyncRegCascade(groupId, instId) {
   fillInstrumentSelect(instId, document.getElementById(groupId).value, false);
 }
 
-// 2) 新增檢驗項目：成功後同步刷新試劑表單的項目選單
-bindRegisterForm("add-item-form", "add-item-msg", "/api/items", { numbers: ["sort_order"] },
-  () => { resyncRegCascade("reg-item-group", "reg-item-instrument"); loadReagentItemOptions(); });
+// 2) 新增檢驗項目：可關聯試劑（reagent_item_map）；成功後刷新各頁選單
+bindRegisterForm("add-item-form", "add-item-msg", "/api/items",
+  {
+    numbers: ["sort_order"],
+    transform(payload) {
+      payload.reagent_ids = checkedLinks("reg-item-reagents");
+    },
+  },
+  () => {
+    resyncRegCascade("reg-item-group", "reg-item-instrument");
+    loadReagentItemOptions();
+    loadRQCItemOptions();
+    reloadLinkOptions("all");
+  });
 
 // 3) 新增試劑：勾選的檢體代碼 → specimen_type_codes
 bindRegisterForm(
@@ -746,19 +996,31 @@ bindRegisterForm(
   "/api/reagents",
   {
     checkboxes: ["in_stock", "parallel_test_done", "same_lot_as_previous"],
-    transform(payload, form) {
-      payload.specimen_type_codes = [...form.querySelectorAll("#reg-reagent-specimens input:checked")]
-        .map((c) => c.value);
+    transform(payload) {
+      payload.specimen_type_codes = checkedLinks("reg-reagent-specimens");
+      payload.item_ids = checkedLinks("reg-reagent-items");        // reagent_item_map
+      payload.reagent_qc_ids = checkedLinks("reg-reagent-qcs");    // qc_reagent_map
     },
   },
-  () => { resyncRegCascade("reg-reagent-group", "reg-reagent-instrument"); loadReagentItemOptions(); }
+  () => {
+    resyncRegCascade("reg-reagent-group", "reg-reagent-instrument");
+    loadReagentItemOptions();
+    reloadLinkOptions("all");
+  }
 );
 
 // 4) 新增品管液
+// 設定檔只含識別資訊與試劑關聯；批號相關欄位在「新批號輸入」分頁
 bindRegisterForm("add-reagent-qc-form", "add-reagent-qc-msg", "/api/reagent-qc", {
-  checkboxes: ["parallel_test_done", "in_use"],
-  numbers: ["manufacturer_mean", "manufacturer_sd", "new_standard_mean", "new_standard_sd"],
-}, () => resyncRegCascade("reg-rqc-group", "reg-rqc-instrument"));
+  checkboxes: ["in_use"],
+  transform(payload) {
+    payload.reagent_ids = checkedLinks("reg-rqc-reagents"); // qc_reagent_map
+  },
+}, () => {
+  resyncRegCascade("reg-rqc-group", "reg-rqc-instrument");
+  loadRQCItemOptions();
+  reloadLinkOptions("all");
+});
 
 // 5) 新增檢體類別：成功後刷新選項與清單
 bindRegisterForm("add-specimen-form", "add-specimen-msg", "/api/specimen-types", {}, () => {
@@ -1060,6 +1322,7 @@ const MANAGE = {
       { name: "item_name", label: "項目全名", type: "text" },
       { name: "unit", label: "單位", type: "text" },
       { name: "sort_order", label: "排序", type: "number" },
+      { name: "reagent_ids", label: "由哪些試劑產生（reagent_item_map）", type: "links", kind: "reagents" },
     ],
   },
   "mg-reagent": {
@@ -1088,6 +1351,8 @@ const MANAGE = {
       { name: "parallel_test_done", label: "已完成平測", type: "checkbox" },
       { name: "same_lot_as_previous", label: "與上一批同批號", type: "checkbox" },
       { name: "specimen_type_codes", label: "可操作檢體類別", type: "specimens" },
+      { name: "item_ids", label: "負責的檢驗項目（reagent_item_map）", type: "links", kind: "items" },
+      { name: "reagent_qc_ids", label: "管理此試劑的品管液（qc_reagent_map）", type: "links", kind: "qcs" },
       { name: "remark", label: "備註", type: "text", full: true },
     ],
   },
@@ -1118,6 +1383,7 @@ const MANAGE = {
       { name: "parallel_test_date", label: "平測完成日期", type: "date" },
       { name: "parallel_test_done", label: "已完成平行測試", type: "checkbox" },
       { name: "in_use", label: "目前使用中", type: "checkbox" },
+      { name: "reagent_ids", label: "管理哪些試劑（qc_reagent_map）", type: "links", kind: "reagents" },
       { name: "remark", label: "備註", type: "text", full: true },
     ],
   },
@@ -1220,7 +1486,7 @@ async function deleteRow(view, row) {
 // ---- 編輯對話框 ----
 const editModal = document.getElementById("edit-modal");
 
-function openEditModal(view, row) {
+async function openEditModal(view, row) {
   const cfg = MANAGE[view];
   mgCurrent = { view, row };
   document.getElementById("edit-modal-title").textContent = `編輯${cfg.label}：${cfg.nameOf(row)}`;
@@ -1232,11 +1498,16 @@ function openEditModal(view, row) {
       if (f.type === "checkbox") {
         return `<label class="check-label"><input type="checkbox" name="${f.name}" ${v ? "checked" : ""} />${f.label}</label>`;
       }
+      if (f.type === "links") {
+        // 候選清單需向後端取，先放容器，稍後以 msRender 填入並預先勾選
+        return `<fieldset class="full check-group"><legend>${esc(f.label)}</legend>
+                  <div id="edit-link-${esc(f.name)}"><span class="check-empty">載入中…</span></div>
+                </fieldset>`;
+      }
       if (f.type === "specimens") {
-        const sel = row.specimen_type_codes || [];
-        return `<fieldset class="full check-group"><legend>${f.label}（可複選）</legend><div class="check-row">${
-          SPECIMEN_TYPES.map((s) => `<label><input type="checkbox" data-spec value="${esc(s.code)}" ${sel.includes(s.code) ? "checked" : ""} />${esc(s.code)}（${esc(s.name)}）</label>`).join("")
-        }</div></fieldset>`;
+        return `<fieldset class="full check-group"><legend>${esc(f.label)}（可複選）</legend>
+                  <div id="edit-link-${esc(f.name)}"></div>
+                </fieldset>`;
       }
       if (f.type === "specimen-one") {
         return `<label>${f.label}<select name="${f.name}"><option value="">（不指定）</option>${
@@ -1249,6 +1520,30 @@ function openEditModal(view, row) {
     })
     .join("");
   editModal.classList.add("open");
+
+  // 檢體類別（本地清單，直接渲染並勾選現有值）
+  const specField = cfg.fields.find((f) => f.type === "specimens");
+  if (specField) {
+    msRender(
+      `edit-link-${specField.name}`,
+      SPECIMEN_TYPES.map((s) => ({ value: s.code, label: `${s.code}（${s.name}）` })),
+      "尚無檢體類別",
+      row.specimen_type_codes || []
+    );
+  }
+
+  // 關聯欄位：依該筆所屬儀器取候選清單，並勾選目前已關聯者
+  const sn = row.instrument_serial_number;
+  for (const f of cfg.fields.filter((x) => x.type === "links")) {
+    const cid = `edit-link-${f.name}`;
+    try {
+      const opts = await fetchLinkOptions(f.kind, sn);
+      msRender(cid, opts, LINK_KINDS[f.kind].empty, row[f.name] || []);
+    } catch (e) {
+      const el = document.getElementById(cid);
+      if (el) { el.classList.remove("ms"); el.innerHTML = `<span class="check-empty">載入失敗：${esc(e.message)}</span>`; }
+    }
+  }
 }
 
 function closeEditModal() {
@@ -1273,8 +1568,10 @@ document.getElementById("edit-modal-save").addEventListener("click", async () =>
   cfg.fields.forEach((f) => {
     if (f.type === "checkbox") {
       payload[f.name] = form.querySelector(`[name=${f.name}]`).checked;
-    } else if (f.type === "specimens") {
-      payload[f.name] = [...form.querySelectorAll("[data-spec]:checked")].map((c) => c.value);
+    } else if (f.type === "specimens" || f.type === "links") {
+      // 整組覆寫；候選清單載入失敗時（無 .ms 容器）略過該欄以免誤清空關聯
+      const box = document.getElementById(`edit-link-${f.name}`);
+      if (box && box.classList.contains("ms")) payload[f.name] = checkedLinks(`edit-link-${f.name}`);
     } else {
       const el = form.querySelector(`[name=${f.name}]`);
       const v = el.value.trim();
@@ -1314,6 +1611,179 @@ function openManage(view) {
   loadManage(view);
 }
 
+// ---------- 新增品管液：設定檔 / 新批號 兩種模式 ----------
+const RQC_HINTS = {
+  profile:
+    '建立某台儀器上「某檢驗項目 · 某濃度 · 某檢體」的品管液設定檔。設定檔 ID 固定，' +
+    '試劑關聯（<code>qc_reagent_map</code>）掛在此設定檔上；日後<strong>換批號請用「新批號輸入」</strong>，' +
+    "才不會產生重複設定檔導致試劑抓錯。",
+  lot:
+    "選定組別 / 儀器 / 檢體類別 / 檢驗項目後，系統會自動帶出目前使用中的批號與效期，" +
+    "填入新批號即可換批。<strong>設定檔 ID 不變</strong>，試劑關聯與歷史品管紀錄都不受影響，" +
+    "舊批號會保留為歷史批號。",
+};
+
+document.querySelectorAll(".mode-tab").forEach((tab) => {
+  tab.addEventListener("click", () => {
+    const mode = tab.dataset.mode;
+    document.querySelectorAll(".mode-tab").forEach((t) => t.classList.toggle("active", t === tab));
+    document.getElementById("rqc-mode-lot").classList.toggle("active", mode === "lot");
+    document.getElementById("add-reagent-qc-form").classList.toggle("active", mode === "profile");
+    document.getElementById("rqc-json-panel").classList.toggle("active", mode === "profile");
+    document.getElementById("rqc-mode-hint").innerHTML = RQC_HINTS[mode];
+    if (mode === "lot") loadLotTestItems();
+  });
+});
+
+// 新批號模式：依儀器 + 檢體帶出有設定檔的檢驗項目
+async function loadLotTestItems() {
+  const sn = document.getElementById("lot-instrument").value;
+  const spec = document.getElementById("lot-specimen").value;
+  const sel = document.getElementById("lot-test-item");
+  if (!sn) {
+    sel.innerHTML = `<option value="" disabled selected>（請先選擇儀器）</option>`;
+    document.getElementById("lot-levels").innerHTML = "";
+    return;
+  }
+  try {
+    const params = new URLSearchParams({ instrument_serial_number: sn });
+    if (spec) params.set("specimen_type_code", spec);
+    const rows = await api("/api/reagent-qc?" + params.toString());
+    const items = [...new Set(rows.map((r) => r.test_item))].sort();
+    sel.innerHTML = items.length
+      ? items.map((i) => `<option value="${esc(i)}">${esc(i)}</option>`).join("")
+      : `<option value="" disabled selected>（此條件下尚無品管液設定檔）</option>`;
+  } catch {
+    sel.innerHTML = `<option value="" disabled selected>（載入失敗）</option>`;
+  }
+  loadLotLevels();
+}
+
+// 帶出該項目各濃度目前使用中的批號，並提供新批號輸入欄
+async function loadLotLevels() {
+  const box = document.getElementById("lot-levels");
+  const sn = document.getElementById("lot-instrument").value;
+  const spec = document.getElementById("lot-specimen").value;
+  const item = document.getElementById("lot-test-item").value;
+  if (!sn || !item) { box.innerHTML = ""; return; }
+
+  const params = new URLSearchParams({ instrument_serial_number: sn, test_item: item });
+  if (spec) params.set("specimen_type_code", spec);
+  let rows;
+  try {
+    rows = await api("/api/reagent-qc/current?" + params.toString());
+  } catch (e) {
+    box.innerHTML = `<div class="empty">載入失敗：${esc(e.message)}</div>`;
+    return;
+  }
+  if (!rows.length) {
+    box.innerHTML = `<div class="empty">此條件下查無品管液設定檔，請先於「品管液設定檔」建立。</div>`;
+    return;
+  }
+
+  const today = todayStr();
+  box.innerHTML = rows
+    .map((r) => {
+      // 效期預警：已過期 / 30 天內到期
+      let expCls = "";
+      if (r.expiry_date) {
+        const days = (new Date(r.expiry_date) - new Date(today)) / 86400000;
+        expCls = days < 0 ? "lot-expired" : days <= 30 ? "lot-expiring" : "";
+      }
+      return `
+      <div class="lot-card" data-qc-id="${esc(r.reagent_qc_id)}">
+        <div class="lot-card-head">
+          <h4>${esc(r.test_item)} · ${esc(r.qc_level)}</h4>
+          ${r.specimen_type_code ? `<span class="er-tag">${esc(r.specimen_type_code)}</span>` : ""}
+          <div class="lot-current">
+            <span>目前批號 <b>${esc(r.qc_lot_number ?? "-")}</b></span>
+            <span class="${expCls}">效期 <b>${esc(r.expiry_date ?? "-")}</b></span>
+            <span>Mean/SD <b>${r.new_standard_mean ?? r.manufacturer_mean ?? "-"} / ${r.new_standard_sd ?? r.manufacturer_sd ?? "-"}</b></span>
+            <span>平測 <b>${r.parallel_test_done ? "已完成" : "未完成"}</b></span>
+          </div>
+        </div>
+        <div class="lot-fields">
+          <label>新批號<input data-f="qc_lot_number" placeholder="留空則不更換此濃度" /></label>
+          <label>效期<input type="date" data-f="expiry_date" /></label>
+          <label>啟用日<input type="date" data-f="effective_from" value="${today}" /></label>
+          <label class="check-label"><input type="checkbox" data-f="parallel_test_done" />已完成平行測試</label>
+          <label>原廠均值<input type="number" step="any" data-f="manufacturer_mean" /></label>
+          <label>原廠 SD<input type="number" step="any" data-f="manufacturer_sd" /></label>
+          <label>平測後新均值<input type="number" step="any" data-f="new_standard_mean" /></label>
+          <label>平測後新 SD<input type="number" step="any" data-f="new_standard_sd" /></label>
+        </div>
+      </div>`;
+    })
+    .join("");
+}
+
+document.getElementById("lot-group").addEventListener("change", (e) => {
+  fillInstrumentSelect("lot-instrument", e.target.value, false);
+  loadLotTestItems();
+});
+document.getElementById("lot-instrument").addEventListener("change", loadLotTestItems);
+document.getElementById("lot-specimen").addEventListener("change", loadLotTestItems);
+document.getElementById("lot-test-item").addEventListener("change", loadLotLevels);
+
+// 送出：只送有填新批號的濃度
+document.getElementById("lot-submit").addEventListener("click", async () => {
+  const msg = document.getElementById("lot-msg");
+  const cards = [...document.querySelectorAll("#lot-levels .lot-card")];
+  const jobs = [];
+  cards.forEach((card) => {
+    const val = (f) => card.querySelector(`[data-f="${f}"]`);
+    const lot = val("qc_lot_number").value.trim();
+    if (!lot) return; // 留空表示此濃度不換批
+    const num = (f) => {
+      const v = val(f).value.trim();
+      return v === "" ? null : parseFloat(v);
+    };
+    const str = (f) => val(f).value.trim() || null;
+    jobs.push({
+      id: card.dataset.qcId,
+      body: {
+        qc_lot_number: lot,
+        expiry_date: str("expiry_date"),
+        effective_from: str("effective_from"),
+        parallel_test_done: val("parallel_test_done").checked,
+        manufacturer_mean: num("manufacturer_mean"),
+        manufacturer_sd: num("manufacturer_sd"),
+        new_standard_mean: num("new_standard_mean"),
+        new_standard_sd: num("new_standard_sd"),
+      },
+    });
+  });
+
+  if (!jobs.length) {
+    msg.className = "add-msg err";
+    msg.textContent = "❌ 請至少填入一個濃度的新批號";
+    return;
+  }
+  msg.className = "add-msg";
+  msg.textContent = `登錄中…（${jobs.length} 個濃度）`;
+  let done = 0;
+  for (const [i, j] of jobs.entries()) {
+    try {
+      await api(`/api/reagent-qc/${encodeURIComponent(j.id)}/lots`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(j.body),
+      });
+      done++;
+    } catch (e) {
+      let text = e.message;
+      try { text = JSON.parse(e.message).detail || text; } catch {}
+      msg.className = "add-msg err";
+      msg.textContent = `❌ 已完成 ${done} 筆，第 ${i + 1} 筆失敗：${text}`;
+      loadLotLevels();
+      return;
+    }
+  }
+  msg.className = "add-msg ok";
+  msg.textContent = `✅ 已登錄 ${done} 個濃度的新批號（設定檔 ID 不變，試劑關聯不受影響）`;
+  loadLotLevels();
+});
+
 // ---------- JSON 匯入 ----------
 // 各頁面的 API 路徑、欄位格式（[型別, 是否必填]）與模板；模板同時作為輸入框提示
 const JSON_IMPORTS = {
@@ -1341,12 +1811,13 @@ const JSON_IMPORTS = {
       item_name: ["string", false],
       unit: ["string", false],
       sort_order: ["number", false],
+      reagent_ids: ["string[]", false],
     },
     template: `[
   { "instrument_serial_number": "43056", "item_code": "RBC", "item_name": "Red Blood Cell Count", "unit": "10^6/uL", "sort_order": 1 },
   { "instrument_serial_number": "43056", "item_code": "HGB", "item_name": "Hemoglobin", "unit": "g/dL", "sort_order": 2 }
 ]`,
-    onSuccess: () => loadReagentItemOptions(),
+    onSuccess: () => { loadReagentItemOptions(); loadRQCItemOptions(); },
   },
   reagent: {
     path: "/api/reagents",
@@ -1364,6 +1835,8 @@ const JSON_IMPORTS = {
       previous_lot_number: ["string", false],
       expiry_date: ["string", false],
       specimen_type_codes: ["string[]", false],
+      item_ids: ["string[]", false],
+      reagent_qc_ids: ["string[]", false],
       remark: ["string", false],
     },
     template: `{
@@ -1381,6 +1854,7 @@ const JSON_IMPORTS = {
   "remark": ""
 }`,
   },
+  // 品管液「設定檔」：只有識別資訊與試劑關聯，批號請走「新批號輸入」
   rqc: {
     path: "/api/reagent-qc",
     schema: {
@@ -1389,29 +1863,29 @@ const JSON_IMPORTS = {
       test_item: ["string", true],
       test_item_full_name: ["string", false],
       qc_level: ["string", true],
-      qc_lot_number: ["string", true],
       unit: ["string", false],
-      manufacturer_mean: ["number", false],
-      manufacturer_sd: ["number", false],
-      parallel_test_done: ["boolean", false],
-      parallel_test_date: ["string", false],
-      new_standard_mean: ["number", false],
-      new_standard_sd: ["number", false],
       in_use: ["boolean", false],
+      reagent_ids: ["string[]", false],
       remark: ["string", false],
     },
-    template: `{
-  "instrument_serial_number": "43056",
-  "specimen_type_code": "B",
-  "test_item": "Na",
-  "qc_level": "Level 1",
-  "qc_lot_number": "QC-NA-B1-2026",
-  "unit": "mmol/L",
-  "manufacturer_mean": 140.0,
-  "manufacturer_sd": 2.5,
-  "parallel_test_done": false,
-  "in_use": true
-}`,
+    template: `[
+  {
+    "instrument_serial_number": "43056",
+    "specimen_type_code": "B",
+    "test_item": "Na",
+    "test_item_full_name": "Sodium",
+    "qc_level": "Level 1",
+    "unit": "mmol/L",
+    "in_use": true
+  },
+  {
+    "instrument_serial_number": "43056",
+    "specimen_type_code": "B",
+    "test_item": "Na",
+    "qc_level": "Level 2",
+    "unit": "mmol/L"
+  }
+]`,
   },
   record: {
     path: "/api/records",

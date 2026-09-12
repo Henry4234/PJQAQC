@@ -1,232 +1,189 @@
-# PJQAQC 資料庫說明 (schema readme)
+# PJQAQC 資料庫說明（v3 分層式架構）
 
-> MariaDB 10.11 / 資料庫 `PJQAQC`。此檔取代原本的 `schema_readme` 資料表，供操作者快速查到每張表、每個欄位的意義與常見問題排查。
->
-> **關聯流向**：`lab_group`（組別）→ `instruments`（儀器）→ `reagent_qc`（品管）→ `reagent`（試劑）→ `items`（項目）
-> 所有主檔皆以 **UUID** 為主鍵。完整建表語法見 [init_db.sql](init_db.sql)。
->
-> **關聯關係**
->
-> | 關係 | 型態 | 實作方式 |
-> |------|------|----------|
-> | 儀器 → 試劑 | 1─N | `reagent.instrument_serial_number` |
-> | 儀器 → 項目 | 1─N | `items.instrument_serial_number` |
-> | 品管 ↔ 試劑 | N─M | 中介表 `qc_reagent_map` |
-> | 試劑 ↔ 項目 | N─M | 中介表 `reagent_item_map` |
-> | 試劑 ↔ 檢體 | N─M | 中介表 `reagent_specimen_map` |
-> | 檢體 → 品管液 | 1─N | `reagent_qc.specimen_type_id` |
->
-> 例：XN-3000 有 Fluorocell/Lysercell WNR、Fluorocell/Lysercell WDF 等多種試劑、3 個 level 的品管液，
-> 以及 RBC/HGB/HCT/.../RET% 等多個項目；同一品管可涵蓋多種試劑，同一試劑可對應多個項目。
-> 檢體例：m-ALB 試劑可驗 URINE 與 CSF（多對多）；Na 項目在 URINE 用 Liquichek Chemistry Urine Control，
-> 在 BLOOD 用 PreciControl Clinchem Multi（同項目不同檢體 → 各自一筆品管液）。
+> MariaDB 10.11 / 資料庫 `PJQAQC`。建表語法見 [init_db.sql](init_db.sql)；
+> 設計依據為 [database_design/README.md](../database_design/README.md)，並依本系統既有需求調整。
 
----
+## 核心概念
 
-## 1. `lab_group` — 組別主檔
+整個模型的中心不是「檢驗項目」，而是 **assay（檢驗設定）**：
 
-集中管理實驗室組別；以 UUID 為主鍵，供其他表以 `group_id` 關聯。
+```
+assay = 儀器 × 檢驗項目 × 檢體別
+```
 
-| 欄位 | 型別 | 說明 | 排查建議 |
-|------|------|------|----------|
-| `group_id` | CHAR(36) PK | UUID 主鍵，`DEFAULT UUID()` 自動產生 | 請勿手動改此值；其他表以此關聯，改動會破壞關聯 |
-| `group_name` | VARCHAR(50) UNIQUE | 組別名稱，如 生化免疫組 / 血液組 / 鏡檢組 / 血庫組 | 重複名稱會被 UNIQUE 擋下 |
-| `group_code` | VARCHAR(20) | 組別代碼（選填） | — |
-| `description` | VARCHAR(255) | 說明 | — |
-| `active` | BOOLEAN | 是否啟用；停用組別建議設 FALSE 而非刪除，以保留歷史關聯 | — |
-| `created_at` / `updated_at` | DATETIME | 建立 / 更新時間 | — |
+- `GLU/BLOOD` 與 `GLU/URINE` 是**兩筆**不同 assay
+- `GLU/BLOOD` 在主機與備機上執行，也是**兩筆**不同 assay
 
-> **常見問題**：若新增儀器時報 FK 錯誤，多半是 `group_id` 不存在或打錯，請先確認此表有對應組別。
+每筆 assay 再透過三張 N:M 中介表，連到可用的試劑、品管液與校正液**產品**。
+
+> **必須守住的約束**：品管判讀一律綁 `instrument`。Westgard 連續規則
+> （2-2s、4-1s、10x）必須分機器各自成序列，主備機的品管**不可**混在一起判讀。
+
+## 三層架構
+
+| 層 | 回答的問題 | 資料表 |
+|---|---|---|
+| **A. 主檔／框架設定** | 系統「允許」什麼 | `lab_sections`、`instruments`、`specimen_types`、`test_items`、`instrument_assays`、三種 `*_products`、三張 `assay_*_requirements` |
+| **B. 批號／庫存實體** | 現場「現在拿到哪一批」 | `reagent_lots`、`qc_lots`、`calibrator_lots`、`qc_target_values`、`instrument_reagent_loads` |
+| **C. 交易／稽核** | 「實際發生了什麼」 | `qc_runs`、`qc_results`、`qc_result_reagents`、`calibration_events`、`calibration_event_assays`、`calibration_event_reagents` |
+
+**分層的關鍵好處：換批號只新增 lot，不動設定。** 產品是穩定定義，批號是實體；
+設定與關聯掛在產品/assay 上，因此換批永遠不會讓試劑或品管液關聯指錯。
 
 ---
 
-## 2. `instruments` — 儀器主檔
+## A. 主檔／框架設定層
 
-組別改以 `group_id` 關聯 `lab_group`。
+### A1. `lab_sections` — 科別／組別
+| 欄位 | 說明 |
+|---|---|
+| `section_id` CHAR(36) PK | UUID |
+| `section_code` / `section_name` | 皆 UNIQUE。現有：生化免疫組(BIO)、血液組(HEM)、鏡檢組(URN)、血庫組(BB) |
 
-| 欄位 | 型別 | 說明 | 排查建議 |
-|------|------|------|----------|
-| `serial_number` | VARCHAR(100) PK | 儀器序號 S/N | 為所有品管紀錄的關聯鍵，請確保唯一且正確 |
-| `instrument_name` | VARCHAR(200) | 儀器名稱 | — |
-| `group_id` | CHAR(36) FK → `lab_group` | 儀器所屬組別 | 新增儀器前組別須先存在於 `lab_group` |
-| `machine_role` | VARCHAR(20) | 主機 / 備機（主備機以 S/N 區分，品管分開判讀） | — |
-| `active` | BOOLEAN | 是否啟用 | 查不到儀器時確認 `active=TRUE` |
-| `created_at` / `updated_at` | DATETIME | 建立 / 更新時間 | — |
+### A2. `instruments` — 儀器實體
+| 欄位 | 說明 |
+|---|---|
+| `instrument_id` CHAR(36) PK | UUID |
+| `serial_number` UNIQUE | 儀器序號，全系統識別鍵 |
+| `section_id` FK | 所屬組別 |
+| `model_name` | 機型（如 XN-3000），主備機通常同機型 |
+| `instrument_role` | `主機` / `備機` / `其他`（CHECK 約束）|
+| `backup_of_instrument_id` FK→self | **備機指向其主機**，供「複製設定到備機」與配對顯示 |
 
-> **常見問題**：查不到儀器時確認 `active=TRUE`；分組錯誤請檢查 `group_id`。
+### A3. `specimen_types` — 檢體別字典
+`B`(BLOOD)、`U`(URINE)、`CSF`、`BF`(BODY FLUID)、`ST`(STOOL)
 
----
+### A4. `test_items` — 檢驗項目字典（全院共用）
+`item_code` UNIQUE。**不再綁儀器**——同一個 `CRE` 在多台儀器、多種檢體上共用同一筆字典。
 
-## 3. `items` — 檢驗項目主檔
+> v2 用 `CRE-U` 這類後綴區分檢體；v3 改為 `item_code=CRE` + `specimen=URINE`。
 
-管理每台儀器上的所有檢驗項目（RBC / HGB / WBC ...）。一台儀器有多個項目（1─N）。
+### A5. `instrument_assays` — 檢驗設定（模型中心）
+| 欄位 | 說明 |
+|---|---|
+| `assay_id` CHAR(36) PK | UUID |
+| `instrument_id` / `test_item_id` / `specimen_type_id` | 三者組成 UNIQUE `uq_assay_route` |
+| `result_unit` | 留空則採 `test_items.default_unit` |
+| `decimal_places`、`method_name`、`instrument_test_code` | 儀器端設定 |
+| `valid_from` / `valid_to` | 生效期間 |
 
-| 欄位 | 型別 | 說明 | 排查建議 |
-|------|------|------|----------|
-| `item_id` | CHAR(36) PK | UUID 主鍵 | — |
-| `instrument_serial_number` | VARCHAR(100) FK → `instruments` | 此項目屬於哪台儀器 | — |
-| `group_id` | CHAR(36) FK → `lab_group` | 所屬組別 | — |
-| `item_code` | VARCHAR(50) | 項目代碼，如 RBC / HGB / NEUT% | 同儀器內 `item_code` 不可重複（`UNIQUE(instrument_serial_number, item_code)`） |
-| `item_name` | VARCHAR(200) | 項目全名 | — |
-| `unit` | VARCHAR(50) | 單位 | — |
-| `sort_order` | INT | 顯示排序 | — |
-| `active` | BOOLEAN | 是否啟用 | — |
-| `remark` | TEXT | 備註 | — |
-| `created_at` / `updated_at` | DATETIME | 建立 / 更新時間 | — |
+另有 `UNIQUE (assay_id, instrument_id)`——供下游用**複合外鍵**保證「結果確實屬於該儀器」。
 
-> **常見問題**：同一項目（如 RBC）出現在多台儀器時，會在各儀器各自成一列，這是正常設計。
+### A6. 三種產品主檔
+`reagent_products`、`qc_products`、`calibrator_products`
 
----
+三者結構相似：`product_code` UNIQUE、`product_name`、`manufacturer`、`catalog_number`。
+**都不放批號，也不綁儀器**——靠 requirement 連到 assay，assay 才綁儀器。
 
-## 4. `specimen_type` — 檢體類別主檔
+### A7. 三張 N:M 中介表
+| 表 | 關係 | 特有欄位 |
+|---|---|---|
+| `assay_reagent_requirements` | assay ↔ 試劑產品 | `reagent_role`（PRIMARY/AUXILIARY/DILUENT/WASH/OTHER）|
+| `assay_qc_requirements` | assay ↔ 品管液產品 | `required`、`priority` |
+| `assay_calibrator_requirements` | assay ↔ 校正液產品 | `required`、`priority` |
 
-固定清單 lookup（可由 API 增補）。試劑可操作的檢體為多對多（`reagent_specimen_map`）；品管液各針對一種檢體（`reagent_qc.specimen_type_id`）。
-
-| 欄位 | 型別 | 說明 | 排查建議 |
-|------|------|------|----------|
-| `specimen_type_id` | CHAR(36) PK | UUID 主鍵 | — |
-| `code` | VARCHAR(20) UNIQUE | 檢體代碼，如 B / U / CSF / BF / ST | API 皆以 code 溝通；不存在的 code 會回 400 |
-| `name` | VARCHAR(100) | 檢體名稱，如 BLOOD / URINE / CSF | — |
-| `description` | VARCHAR(255) | 說明 | — |
-| `active` | BOOLEAN | 是否啟用；停用建議設 FALSE 而非刪除 | — |
-| `created_at` / `updated_at` | DATETIME | 建立 / 更新時間 | — |
-
-> 已種入：`B`(BLOOD)、`U`(URINE)、`CSF`(CSF)、`BF`(BODY FLUID)、`ST`(STOOL)。
-
----
-
-## 5. `reagent` — 試劑主檔
-
-管理試劑入庫、平測與批號延續性。
-
-| 欄位 | 型別 | 說明 | 排查建議 |
-|------|------|------|----------|
-| `reagent_id` | CHAR(36) PK | UUID 主鍵 | — |
-| `group_id` | CHAR(36) FK → `lab_group` | 所屬組別 | — |
-| `instrument_serial_number` | VARCHAR(100) FK → `instruments` | 此試劑用於哪台儀器 | — |
-| `test_item` | VARCHAR(100) | 對應檢驗項目，如 GLU / WBC | 試劑無法連動品管時，確認 `test_item` 與儀器一致 |
-| `reagent_name` | VARCHAR(200) | 試劑名稱 | — |
-| `lot_number` | VARCHAR(100) | 試劑批號 | — |
-| `manufacturer` | VARCHAR(200) | 廠商 | — |
-| `in_stock` | BOOLEAN | 是否已入庫 | 未入庫（FALSE）的試劑不應被使用 |
-| `in_stock_date` | DATE | 入庫日期 | — |
-| `parallel_test_done` | BOOLEAN | 入庫後是否已完成試劑平行測試（平測） | 換新批號後若未平測即上線，品管可能整體偏移，請優先檢查此欄 |
-| `parallel_test_date` | DATE | 試劑平測完成日期 | — |
-| `same_lot_as_previous` | BOOLEAN | 是否與上一個批號為同一批號 | 同批號可沿用前批平測結果；不同批號通常需重新平測 |
-| `previous_lot_number` | VARCHAR(100) | 上一個批號（供批號延續性追溯） | — |
-| `expiry_date` | DATE | 效期 | — |
-| `active` | BOOLEAN | 是否啟用 | — |
-| `remark` | TEXT | 備註 | — |
-| `created_at` / `updated_at` | DATETIME | 建立 / 更新時間 | — |
+中介表不只表達共用關係，還保存角色與優先序。**換產品時改 mapping 即可，不必改任何歷史結果。**
 
 ---
 
-## 6. `reagent_qc` — 品管液主檔
+## B. 批號／庫存實體層
 
-品管液本身也是一種試劑，但具不同濃度（level），並追蹤平測後的新 standard mean / SD。
-「一個品管管理哪些試劑」為多對多關係，見 `qc_reagent_map`。
-同一檢驗項目、不同檢體使用不同品管液，故每筆各針對一種檢體（`specimen_type_id`）。
+### B1. `reagent_lots` — 試劑批號
+標準欄位：`lot_number`（同產品內 UNIQUE）、`received_at`、`opened_at`、`expiry_date`、
+`lot_status`（QUARANTINE/AVAILABLE/IN_USE/EXHAUSTED/EXPIRED/RECALLED）。
 
-| 欄位 | 型別 | 說明 | 排查建議 |
-|------|------|------|----------|
-| `reagent_qc_id` | CHAR(36) PK | UUID 主鍵 | — |
-| `group_id` | CHAR(36) FK → `lab_group` | 所屬組別 | — |
-| `specimen_type_id` | CHAR(36) FK → `specimen_type` | 此品管液針對的檢體類別 | 同項目（如 Na）在 URINE 與 BLOOD 各自一筆品管液，屬正常設計 |
-| `instrument_serial_number` | VARCHAR(100) FK → `instruments` | 對應儀器 | — |
-| `test_item` | VARCHAR(100) | 檢驗項目 | — |
-| `test_item_full_name` | VARCHAR(200) | 項目全名 | — |
-| `qc_level` | VARCHAR(50) | 品管液濃度，如 Level 1/2/3（同項目不同濃度分開管理與判讀） | — |
-| `qc_lot_number` | VARCHAR(100) | 品管液批號 | — |
-| `unit` | VARCHAR(50) | 單位 | — |
-| `manufacturer_mean` | DECIMAL | 原廠（或前批）均值，平測前採用 | — |
-| `manufacturer_sd` | DECIMAL | 原廠（或前批）SD | — |
-| `parallel_test_done` | BOOLEAN | 此品管液是否已完成平行測試 | 未平測（FALSE）時應沿用 `manufacturer_mean/sd` |
-| `parallel_test_date` | DATE | 平行測試完成日期 | — |
-| `new_standard_mean` | DECIMAL | 平行測試後建立的新 standard mean，平測後採用 | 平測完成卻仍為 NULL，代表新標準未建立，判讀會誤用舊值 |
-| `new_standard_sd` | DECIMAL | 平行測試後建立的新 standard SD | — |
-| `in_use` | BOOLEAN | 是否為目前使用中的品管液 | 同項目/濃度同時有多筆 `in_use=TRUE` 會造成判讀取值混淆，應僅保留一筆 |
-| `active` | BOOLEAN | 是否啟用 | — |
-| `remark` | TEXT | 備註 | — |
-| `created_at` / `updated_at` | DATETIME | 建立 / 更新時間 | — |
+**本系統特有（參考設計未涵蓋，此處保留）：**
+| 欄位 | 說明 |
+|---|---|
+| `parallel_test_done` / `parallel_test_date` | 入庫後是否已完成試劑平測 |
+| `same_lot_as_previous` | 是否與上一批同批號 |
+| `previous_reagent_lot_id` FK→self | 上一批，供批號延續性追溯 |
 
-> **常見問題**：z-score 異常且全面偏移時，先確認品管液是否換批、是否已平測、採用的 mean/SD 是否正確。
+### B2. `qc_lots` — 品管液批號
+`UNIQUE (qc_product_id, lot_number, level_code)`。
+**同一 kit 的 Level 1/2/3 各一列**——濃度屬於批號，不屬於設定。
+亦保留 `parallel_test_done` / `parallel_test_date`。
 
----
+### B3. `calibrator_lots` — 校正液批號
+含 `level_code` 與 `assigned_value_text`（原廠指定值）。
 
-## 7. `qc_reagent_map` — 品管 ↔ 試劑 關聯（多對多）
+### B4. `qc_target_values` — 品管目標值（版本化）
+每個 **assay × QC 批號** 的 mean/SD、允收區間與生效期間。
 
-一個品管（`reagent_qc`）可管理多種試劑；一個試劑亦可被多個品管涵蓋。
+| 欄位 | 說明 |
+|---|---|
+| `target_source` | `MANUFACTURER`（平測前用原廠值）/ `LAB`（平測後的實驗室值）/ `PEER_GROUP` |
+| `target_mean` / `target_sd` | SD 必須 > 0（CHECK）|
+| `effective_from` / `effective_to` | `effective_to IS NULL` 表示目前生效中 |
+| `current_slot` | 產生欄位；配合 `UNIQUE (assay_id, qc_lot_id, current_slot)`，**由 DB 保證同一 assay+批號只能有一筆生效中版本** |
 
-| 欄位 | 型別 | 說明 |
-|------|------|------|
-| `id` | BIGINT PK | 流水號 |
-| `reagent_qc_id` | CHAR(36) FK → `reagent_qc` | 品管液 |
-| `reagent_id` | CHAR(36) FK → `reagent` | 試劑 |
-| `created_at` | DATETIME | 建立時間 |
+> 平測的產出就在這裡：平測前建 `MANUFACTURER` 版本，平測完成後將舊版填入
+> `effective_to`、另建一筆 `LAB` 版本。歷史判讀因此永遠可重現。
 
-> `UNIQUE(reagent_qc_id, reagent_id)` 防止重複關聯；刪除主檔時 `ON DELETE CASCADE` 自動清除關聯列。
+### B5. `instrument_reagent_loads` — 試劑上機
+哪一批試劑、何時、裝到哪台儀器的哪個位置。
+`UNIQUE (instrument_id, position_code, current_slot)` 保證**同一位置同時只有一批在線上**。
 
 ---
 
-## 8. `reagent_item_map` — 試劑 ↔ 項目 關聯（多對多）
+## C. 交易／稽核層
 
-一個試劑可用於多個檢驗項目；一個項目亦可由多個試劑產生。
+### C1. `qc_runs` — 一次品管執行（header）
+一瓶多項目品管液跑一次，可產生多個項目的結果。含 `instrument_id`、`qc_lot_id`、`run_at`、`operator_id`。
 
-| 欄位 | 型別 | 說明 |
-|------|------|------|
-| `id` | BIGINT PK | 流水號 |
-| `reagent_id` | CHAR(36) FK → `reagent` | 試劑 |
-| `item_id` | CHAR(36) FK → `items` | 項目 |
-| `created_at` | DATETIME | 建立時間 |
+### C2. `qc_results` — 單一項目的品管結果
+| 欄位 | 說明 |
+|---|---|
+| `assay_id` | 哪一個檢驗設定 |
+| `result_value` | 量測值 |
+| `target_mean_snapshot` / `target_sd_snapshot` / `unit_snapshot` | **當時值快照** |
+| `z_score` | 產生欄位：`(result − mean) / NULLIF(sd, 0)`，由 DB 自動算 |
+| `result_status` | PASS / WARNING / FAIL / INVALID |
+| `westgard_flags` JSON | 違反的規則，如 `["1-3s","2-2s"]` |
 
-> `UNIQUE(reagent_id, item_id)` 防止重複關聯；刪除主檔時 `ON DELETE CASCADE` 自動清除關聯列。
+**為什麼要快照**：主檔日後變更（換批、重新平測）時，歷史判讀仍能重現「當時為何判為 Fail」——
+這是醫療品質稽核的硬性要求。
+
+三道複合外鍵保證資料一致：結果的 assay 屬於該 run 的儀器、QC 產品確實被該 assay 允許、
+採用的目標值版本確實對應該 assay + 批號。
+
+### C3. `qc_result_reagents`
+該筆結果實際使用的試劑批號（可多筆，含角色）。
+
+### C4. 校正三表
+`calibration_events`（一次校正事件）→ `calibration_event_assays`（涵蓋哪些 assay 及各自 Pass/Fail）
+→ `calibration_event_reagents`（各項目實際使用的試劑批號）。
+
+---
+
+## D. 讀取用 View
+
+| View | 用途 |
+|---|---|
+| `v_assay_catalog` | assay 攤平：組別／儀器／項目／檢體／單位，一次查完 |
+| `v_qc_result_detail` | 品管結果攤平：含儀器、項目、檢體、品管液產品與批號、z-score、判讀 |
+
+> 查詢時**不要**一次展開三組 N:M（試劑×品管液×校正液），列數會相乘。
+> API 建議分三個子查詢，或各自聚合成 JSON array。
 
 ---
 
-## 9. `reagent_specimen_map` — 試劑 ↔ 檢體 關聯（多對多）
+## 常見問題排查
 
-同一種試劑可操作多種檢體，如 m-ALB 可驗 URINE 與 CSF。
+| 症狀 | 先查哪裡 |
+|---|---|
+| 新增 assay 報 FK 錯誤 | 儀器／項目／檢體三者是否都已建立 |
+| 寫入 `qc_target_values` 被擋 | `assay_qc_requirements` 是否已允許該 QC 產品用於此 assay |
+| 寫入 `qc_results` 被擋 | 該 assay 是否屬於 run 的儀器；`qc_target_id` 是否對應同一 assay+批號 |
+| 換批後判讀整體偏移 | 新批是否已平測、`qc_target_values` 是否已建立 `LAB` 版本 |
+| z-score 為 NULL | `target_sd_snapshot` 是否為 NULL 或 0 |
+| 同一位置上機被擋 | 該位置是否有前一批未 `unloaded_at` |
 
-| 欄位 | 型別 | 說明 |
-|------|------|------|
-| `id` | BIGINT PK | 流水號 |
-| `reagent_id` | CHAR(36) FK → `reagent` | 試劑 |
-| `specimen_type_id` | CHAR(36) FK → `specimen_type` | 檢體類別 |
-| `created_at` | DATETIME | 建立時間 |
+## 刪除策略
 
-> `UNIQUE(reagent_id, specimen_type_id)` 防止重複關聯；刪除主檔時 `ON DELETE CASCADE` 自動清除關聯列。
-
----
-
-## 10. `qc_records` — 品管紀錄
-
-以 FK 連結組別 / 儀器 / 品管液，並保留關鍵欄位「快照」供稽核。
-
-| 欄位 | 型別 | 說明 | 排查建議 |
-|------|------|------|----------|
-| `id` | BIGINT PK AUTO_INCREMENT | 流水號 | — |
-| `reagent_qc_id` | CHAR(36) FK → `reagent_qc` | 此筆品管使用的品管液 | 為 NULL 表示未關聯品管液主檔，建議補上以利追溯 |
-| `group_id` | CHAR(36) FK → `lab_group` | 所屬組別 | — |
-| `instrument_serial_number` | VARCHAR(100) FK → `instruments` | 儀器 S/N | — |
-| `instrument_name` | VARCHAR(200) | 儀器名稱（快照） | — |
-| `test_item` | VARCHAR(100) | 檢驗項目（快照） | — |
-| `test_item_full_name` | VARCHAR(200) | 項目全名（快照） | — |
-| `qc_level` | VARCHAR(50) | 濃度（快照） | — |
-| `qc_lot_number` | VARCHAR(100) | 品管液批號（快照） | — |
-| `unit` | VARCHAR(50) | 單位（快照） | — |
-| `lot_mean` | DECIMAL | 本次採用的均值（快照，刻意不隨主檔異動） | 與 `reagent_qc` 目前值不同屬正常（紀錄的是當時採用值） |
-| `lot_standard_deviation` | DECIMAL | 本次採用的 SD（快照） | — |
-| `acceptable_range_lower` / `_upper` | DECIMAL | 可接受範圍 | — |
-| `qc_date` / `qc_time` | DATE / TIME | 品管日期 / 時間 | Dashboard 數字異常時，先用 `qc_date` + `instrument_serial_number` 縮小範圍 |
-| `operator` | VARCHAR(100) | 操作者 | — |
-| `qc_result_value` | DECIMAL | 品管結果值 | — |
-| `z_score` | DECIMAL | (result − mean) / SD，判讀依據 | SD=0 或缺值時為 NULL；請檢查品管液 mean/SD 設定 |
-| `qc_status` | VARCHAR(20) | Pass / Warning / Fail | — |
-| `westgard_rule_violation` | TEXT | 違反的 Westgard 規則，如 1-3s、2-2s | Fail 但此欄為空（或反之）代表判讀邏輯與狀態不一致，請檢查後端 |
-| `remark` | TEXT | 備註 | — |
-| `created_at` | DATETIME | 建立時間 | — |
-
----
+主檔停用請用 `active = FALSE`；批號改 `lot_status`。
+多數外鍵為 `ON DELETE RESTRICT`——**刻意讓誤刪在 DB 層直接失敗**。
+僅中介表與明細表（requirements、event_assays 等）採 `CASCADE`，因為它們依附父資料而存在。
 
 ## Westgard 規則速查
 

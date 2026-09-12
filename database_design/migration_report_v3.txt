@@ -1,0 +1,70 @@
+== 舊資料讀取 ==
+  lab_group              4
+  instruments            8
+  items                  220
+  specimen_type          5
+  reagent                14
+  reagent_qc             11
+  reagent_qc_lot         12
+  reagent_item_map       14
+  reagent_specimen_map   10
+  qc_reagent_map         12
+
+== 套用新 schema（63 條語句）==
+  建立完成，共 24 個物件
+
+== instruments：8 台，主備機配對 4 組 ==
+
+== 項目：220 筆 items → 102 個全院項目 + 220 筆 assay ==
+   拆為 URINE 檢體：['CA-U', 'CL-U', 'CRE-U', 'IP-U', 'K-U', 'Na-U', 'TP-U', 'UA-U']
+
+== 試劑：14 筆 → 10 個產品 + 10 個批號 ==
+
+== 試劑↔assay 關聯：24 筆 ==
+   更正：12887 P.T：Pathromtin SL → Thromborel S（依裁示更正）
+   ⚠ 無任何 assay 關聯的試劑產品：['Pathromtin SL']
+
+== 品管液：2 個產品 ['Level', 'Ci-Trol'] + 6 個批號（含 1 筆歷史批號）==
+== 品管液↔assay 關聯：21 筆 ==
+== 品管目標值：8 筆（無 mean/SD 者略過，如 CBC）==
+
+== 複製 43056 → 43052：試劑關聯 14 筆、品管液關聯 17 筆 ==
+
+== 遷移後統計 ==
+  lab_sections                   4
+  instruments                    8
+  specimen_types                 5
+  test_items                     102
+  instrument_assays              220
+  reagent_products               10
+  reagent_lots                   10
+  assay_reagent_requirements     38
+  qc_products                    2
+  qc_lots                        6
+  qc_target_values               8
+  assay_qc_requirements          38
+  calibrator_products            0
+  calibrator_lots                0
+  qc_runs                        0
+  qc_results                     0
+  v_assay_catalog (view)         220
+
+== 抽樣：同項目不同檢體（新設計核心）==
+  CA         檢體=B,U  assay 數=4
+  CL         檢體=B,U  assay 數=4
+  CRE        檢體=B,U  assay 數=4
+  IP         檢體=B,U  assay 數=4
+  K          檢體=B,U  assay 數=4
+  Na         檢體=B,U  assay 數=4
+  TP         檢體=B,U  assay 數=4
+  UA         檢體=B,U  assay 數=4
+
+== 主備機配對 ==
+  33110    Roche Cobas c503-Line1     主機
+  44220    Roche Cobas c503-Line2     備機  →主機 33110
+  11330    Roche Cobas e801-Line1     主機
+  22440    Roche Cobas e801-Line2     備機  →主機 11330
+  11898    Sysmex CS-1600-A           主機
+  12887    Sysmex CS-1600-B           備機  →主機 11898
+  43056    Sysmex XN-3000-A           主機
+  43052    Sysmex XN-3000-B           備機  →主機 43056

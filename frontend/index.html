@@ -446,6 +446,10 @@
         <label>項目全名<input name="item_name" placeholder="如 Red Blood Cell Count" /></label>
         <label>單位<input name="unit" placeholder="如 10^3/uL" /></label>
         <label>排序<input type="number" name="sort_order" value="0" /></label>
+        <fieldset class="full check-group">
+          <legend>由哪些試劑產生此項目（可複選，建立 <code>reagent_item_map</code> 關聯）</legend>
+          <div id="reg-item-reagents" class="check-row"></div>
+        </fieldset>
         <div class="form-actions full">
           <button type="submit" class="btn">新增項目</button>
           <span id="add-item-msg" class="add-msg"></span>
@@ -484,6 +488,14 @@
           <legend>可操作的檢體類別（可複選）</legend>
           <div id="reg-reagent-specimens" class="check-row"></div>
         </fieldset>
+        <fieldset class="full check-group">
+          <legend>此試劑負責檢驗的項目（可複選，建立 <code>reagent_item_map</code> 關聯）</legend>
+          <div id="reg-reagent-items" class="check-row"></div>
+        </fieldset>
+        <fieldset class="full check-group">
+          <legend>管理此試劑的品管液（可複選，建立 <code>qc_reagent_map</code> 關聯）</legend>
+          <div id="reg-reagent-qcs" class="check-row"></div>
+        </fieldset>
         <label class="full">備註<input name="remark" /></label>
         <div class="form-actions full">
           <button type="submit" class="btn">新增試劑</button>
@@ -505,31 +517,72 @@
     <!-- ============ 新增品管液 ============ -->
     <section id="view-add-reagent-qc" class="view">
       <div class="view-head"><h2>新增品管液</h2></div>
-      <form id="add-reagent-qc-form" class="form-grid">
+
+      <div class="mode-tabs">
+        <button type="button" class="mode-tab active" data-mode="profile">品管液設定檔</button>
+        <button type="button" class="mode-tab" data-mode="lot">新批號輸入</button>
+      </div>
+      <p class="mode-hint" id="rqc-mode-hint">
+        建立某台儀器上「某檢驗項目 · 某濃度 · 某檢體」的品管液設定檔。設定檔 ID 固定，
+        試劑關聯（<code>qc_reagent_map</code>）掛在此設定檔上；日後<strong>換批號請用「新批號輸入」</strong>，
+        才不會產生重複設定檔導致試劑抓錯。
+      </p>
+
+      <!-- 模式二：新批號輸入 -->
+      <div id="rqc-mode-lot" class="mode-pane">
+        <div class="filter-bar">
+          <div class="filter-item">
+            <label>組別</label>
+            <select id="lot-group"></select>
+          </div>
+          <div class="filter-item">
+            <label>儀器 (S/N)</label>
+            <select id="lot-instrument"></select>
+          </div>
+          <div class="filter-item">
+            <label>檢體類別</label>
+            <select id="lot-specimen"></select>
+          </div>
+          <div class="filter-item">
+            <label>檢驗項目</label>
+            <select id="lot-test-item"></select>
+          </div>
+        </div>
+        <div id="lot-levels"></div>
+        <div class="form-actions" style="margin-top:14px">
+          <button type="button" class="btn" id="lot-submit">登錄新批號</button>
+          <span id="lot-msg" class="add-msg"></span>
+        </div>
+      </div>
+
+      <form id="add-reagent-qc-form" class="form-grid mode-pane active">
         <label>組別*<select id="reg-rqc-group" required></select></label>
         <label>儀器 (S/N)*<select name="instrument_serial_number" id="reg-rqc-instrument" required></select></label>
         <label>檢體類別*<select name="specimen_type_code" id="reg-rqc-specimen" required></select></label>
-        <label>檢驗項目*<input name="test_item" required placeholder="如 Na / CBC" /></label>
-        <label>項目全名<input name="test_item_full_name" /></label>
+        <label>檢驗項目*<select name="test_item" id="reg-rqc-item" required></select></label>
+        <label>項目全名<input name="test_item_full_name" id="reg-rqc-item-full" placeholder="（依檢驗項目自動帶入）" /></label>
         <label>濃度 (Level)*<input name="qc_level" required placeholder="如 Level 1" /></label>
-        <label>品管液批號*<input name="qc_lot_number" required /></label>
         <label>單位<input name="unit" /></label>
-        <label>原廠均值 (Mean)<input type="number" step="any" name="manufacturer_mean" /></label>
-        <label>原廠標準差 (SD)<input type="number" step="any" name="manufacturer_sd" /></label>
-        <label class="check-label"><input type="checkbox" name="parallel_test_done" />已完成平行測試</label>
-        <label>平測完成日期<input type="date" name="parallel_test_date" /></label>
-        <label>平測後新均值<input type="number" step="any" name="new_standard_mean" /></label>
-        <label>平測後新 SD<input type="number" step="any" name="new_standard_sd" /></label>
         <label class="check-label"><input type="checkbox" name="in_use" checked />目前使用中</label>
+        <fieldset class="full check-group">
+          <legend>此品管液所管理的試劑（可複選，建立 <code>qc_reagent_map</code> 關聯）</legend>
+          <div id="reg-rqc-reagents" class="check-row"></div>
+        </fieldset>
         <label class="full">備註<input name="remark" /></label>
+        <p class="field-note full">
+          批號、效期、原廠 Mean/SD、平測等隨批號變動的資料，請於「新批號輸入」分頁登錄。
+        </p>
         <div class="form-actions full">
-          <button type="submit" class="btn">新增品管液</button>
+          <button type="submit" class="btn">建立設定檔</button>
           <span id="add-reagent-qc-msg" class="add-msg"></span>
         </div>
       </form>
-      <div class="panel json-import">
-        <h3>以 JSON 匯入品管液</h3>
-        <p class="json-hint">支援單筆物件或多筆陣列 <code>[{...}, {...}]</code>，格式見輸入框提示。</p>
+      <div class="panel json-import mode-pane active" id="rqc-json-panel">
+        <h3>以 JSON 匯入品管液設定檔</h3>
+        <p class="json-hint">
+          支援單筆物件或多筆陣列 <code>[{...}, {...}]</code>，格式見輸入框提示。
+          設定檔<strong>不含批號欄位</strong>——批號、效期、Mean/SD 請於「新批號輸入」分頁登錄。
+        </p>
         <textarea id="json-rqc" rows="10" spellcheck="false"></textarea>
         <div class="json-actions">
           <span id="json-rqc-msg" class="add-msg"></span>

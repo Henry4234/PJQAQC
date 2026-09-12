@@ -1,324 +1,759 @@
--- =============================================================
--- PJQAQC MySQL / MariaDB 資料庫初始化腳本 (v2 關聯式重構)
--- 用法: mysql -h 192.168.0.111 -u PJQAQC -p PJQAQC < init_db.sql
+-- ============================================================================
+-- PJQAQC 檢驗科品管資料庫（v3 分層式重構）
+-- 目標環境：MariaDB 10.11（NAS 192.168.0.111）／資料庫 PJQAQC
 --
--- 架構關聯流向:
---   lab_group (組別) → instruments (儀器) → reagent_qc (品管) → reagent (試劑) → items (項目)
---   主檔皆以 UUID 為主鍵。多對多關係:
---     品管 (reagent_qc)  N─M  試劑 (reagent)        → 透過 qc_reagent_map
---     試劑 (reagent)     N─M  項目 (items)          → 透過 reagent_item_map
---     試劑 (reagent)     N─M  檢體 (specimen_type)  → 透過 reagent_specimen_map
---   一對多關係:
---     儀器 1─N 試劑 (reagent.instrument_serial_number)
---     儀器 1─N 項目 (items.instrument_serial_number)
---     檢體 1─N 品管液 (reagent_qc.specimen_type_id；同一項目不同檢體用不同品管液)
--- =============================================================
+-- 設計依據：database_design/README.md 的三層式架構，並依既有系統調整：
+--   * 主鍵沿用 CHAR(36) UUID（非參考設計的 BIGINT）
+--   * collation 用 utf8mb4_unicode_ci（MariaDB 無 MySQL 8 的 utf8mb4_0900_ai_ci）
+--   * 機器角色沿用中文「主機 / 備機」
+--   * 保留參考設計未涵蓋、但本系統既有的「平行測試（平測）」欄位
+--   * 新增 instruments.backup_of_instrument_id 記錄主備機配對，供「複製設定到備機」使用
+--
+-- 三層：
+--   A. 主檔／框架設定層 — 系統「允許」什麼
+--   B. 批號／庫存實體層 — 現場「現在拿到哪一批」
+--   C. 交易／稽核層     — 「實際發生了什麼」
+--
+-- 核心概念：assay（檢驗設定）= 儀器 × 檢驗項目 × 檢體別
+--   GLU/BLOOD 與 GLU/URINE 是兩筆；GLU/BLOOD 在主機與備機上也是兩筆。
+--   品管判讀必須分機器各自成序列（Westgard 2-2s/4-1s/10x），故結果一律綁 instrument。
+--
+-- 警告：本腳本會先 DROP 既有物件，執行前請確認已備份。
+-- ============================================================================
+
+SET NAMES utf8mb4;
+
+DROP VIEW IF EXISTS v_qc_result_detail;
+DROP VIEW IF EXISTS v_assay_catalog;
 
 SET FOREIGN_KEY_CHECKS = 0;
-DROP TABLE IF EXISTS qc_records;
+-- C. 交易層
+DROP TABLE IF EXISTS calibration_event_reagents;
+DROP TABLE IF EXISTS calibration_event_assays;
+DROP TABLE IF EXISTS calibration_events;
+DROP TABLE IF EXISTS qc_result_reagents;
+DROP TABLE IF EXISTS qc_results;
+DROP TABLE IF EXISTS qc_runs;
+-- B. 批號層
+DROP TABLE IF EXISTS instrument_reagent_loads;
+DROP TABLE IF EXISTS qc_target_values;
+DROP TABLE IF EXISTS calibrator_lots;
+DROP TABLE IF EXISTS qc_lots;
+DROP TABLE IF EXISTS reagent_lots;
+-- A. 設定層
+DROP TABLE IF EXISTS assay_calibrator_requirements;
+DROP TABLE IF EXISTS assay_qc_requirements;
+DROP TABLE IF EXISTS assay_reagent_requirements;
+DROP TABLE IF EXISTS calibrator_products;
+DROP TABLE IF EXISTS qc_products;
+DROP TABLE IF EXISTS reagent_products;
+DROP TABLE IF EXISTS instrument_assays;
+DROP TABLE IF EXISTS test_items;
+DROP TABLE IF EXISTS specimen_types;
+DROP TABLE IF EXISTS instruments;
+DROP TABLE IF EXISTS lab_sections;
+-- v2 舊表（重構後不再使用）
+DROP TABLE IF EXISTS reagent_qc_lot;
 DROP TABLE IF EXISTS qc_reagent_map;
 DROP TABLE IF EXISTS reagent_item_map;
 DROP TABLE IF EXISTS reagent_specimen_map;
 DROP TABLE IF EXISTS reagent_qc;
-DROP TABLE IF EXISTS items;
+DROP TABLE IF EXISTS qc_records;
 DROP TABLE IF EXISTS reagent;
+DROP TABLE IF EXISTS items;
 DROP TABLE IF EXISTS specimen_type;
-DROP TABLE IF EXISTS instruments;
 DROP TABLE IF EXISTS lab_group;
 SET FOREIGN_KEY_CHECKS = 1;
 
--- 註：資料庫欄位說明改以本地 Markdown 檔維護，見 schema_readme.md
 
+-- ==========================================================================
+-- A. 主檔／框架設定層
+-- ==========================================================================
 
--- -------------------------------------------------------------
--- 1. lab_group : 組別主檔 (UUID PK)
--- -------------------------------------------------------------
-CREATE TABLE lab_group (
-    group_id    CHAR(36)     NOT NULL DEFAULT UUID() PRIMARY KEY,
-    group_name  VARCHAR(50)  NOT NULL UNIQUE COMMENT '組別名稱，例如 生化免疫組 / 血液組 / 鏡檢組 / 血庫組',
-    group_code  VARCHAR(20)  NULL           COMMENT '組別代碼 (選填)',
-    description VARCHAR(255) NULL,
-    active      BOOLEAN      NOT NULL DEFAULT TRUE,
-    created_at  DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at  DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+-- A1. 科別 / 組別
+CREATE TABLE lab_sections (
+    section_id   CHAR(36)     NOT NULL DEFAULT UUID() PRIMARY KEY,
+    section_code VARCHAR(30)  NOT NULL,
+    section_name VARCHAR(100) NOT NULL,
+    description  VARCHAR(500) NULL,
+    active       BOOLEAN      NOT NULL DEFAULT TRUE,
+    created_at   DATETIME(6)  NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    updated_at   DATETIME(6)  NOT NULL DEFAULT CURRENT_TIMESTAMP(6)
+                              ON UPDATE CURRENT_TIMESTAMP(6),
+    UNIQUE KEY uq_lab_sections_code (section_code),
+    UNIQUE KEY uq_lab_sections_name (section_name)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 
--- -------------------------------------------------------------
--- 2. instruments : 儀器主檔 (組別改為 FK 關聯 lab_group)
--- -------------------------------------------------------------
+-- A2. 儀器實體（以序號唯一識別）
 CREATE TABLE instruments (
-    serial_number   VARCHAR(100) NOT NULL PRIMARY KEY COMMENT '儀器序號 S/N',
-    instrument_name VARCHAR(200) NOT NULL,
-    group_id        CHAR(36)     NOT NULL COMMENT 'FK → lab_group.group_id (組別由此關聯查詢)',
-    machine_role    VARCHAR(20)  NOT NULL DEFAULT '主機' COMMENT '主機 / 備機',
+    instrument_id   CHAR(36)     NOT NULL DEFAULT UUID() PRIMARY KEY,
+    section_id      CHAR(36)     NOT NULL,
+    serial_number   VARCHAR(100) NOT NULL,
+    instrument_name VARCHAR(150) NOT NULL,
+    manufacturer    VARCHAR(150) NULL,
+    model_name      VARCHAR(100) NULL COMMENT '機型，如 XN-3000；主備機通常同機型',
+    instrument_role VARCHAR(20)  NOT NULL DEFAULT '主機' COMMENT '主機 / 備機 / 其他',
+    backup_of_instrument_id CHAR(36) NULL
+                    COMMENT '若為備機，指向其對應主機；供「複製設定到備機」與配對顯示',
     active          BOOLEAN      NOT NULL DEFAULT TRUE,
-    created_at      DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at      DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-
-    INDEX idx_instruments_group (group_id),
-    CONSTRAINT fk_instruments_group
-        FOREIGN KEY (group_id) REFERENCES lab_group(group_id)
+    installed_at    DATE         NULL,
+    retired_at      DATE         NULL,
+    created_at      DATETIME(6)  NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    updated_at      DATETIME(6)  NOT NULL DEFAULT CURRENT_TIMESTAMP(6)
+                                 ON UPDATE CURRENT_TIMESTAMP(6),
+    UNIQUE KEY uq_instruments_serial (serial_number),
+    KEY idx_instruments_section_active (section_id, active),
+    KEY idx_instruments_backup_of (backup_of_instrument_id),
+    CONSTRAINT chk_instruments_role
+        CHECK (instrument_role IN ('主機', '備機', '其他')),
+    CONSTRAINT chk_instruments_dates
+        CHECK (retired_at IS NULL OR installed_at IS NULL OR retired_at >= installed_at),
+    CONSTRAINT fk_instruments_section
+        FOREIGN KEY (section_id) REFERENCES lab_sections(section_id)
+        ON UPDATE RESTRICT ON DELETE RESTRICT,
+    CONSTRAINT fk_instruments_backup_of
+        FOREIGN KEY (backup_of_instrument_id) REFERENCES instruments(instrument_id)
+        ON UPDATE RESTRICT ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 
--- -------------------------------------------------------------
--- 3. items : 檢驗項目主檔 (UUID PK)
---    管理每台儀器上的所有檢驗項目 (RBC / HGB / WBC ...)。
---    一台儀器有多個項目 (1─N)；同一 item_code 在不同儀器各自成列。
--- -------------------------------------------------------------
-CREATE TABLE items (
-    item_id                  CHAR(36)     NOT NULL DEFAULT UUID() PRIMARY KEY,
-    instrument_serial_number VARCHAR(100) NOT NULL COMMENT 'FK → instruments.serial_number (此項目屬於哪台儀器)',
-    group_id                 CHAR(36)     NULL COMMENT 'FK → lab_group.group_id',
-    item_code                VARCHAR(50)  NOT NULL COMMENT '項目代碼，如 RBC / HGB / WBC / NEUT%',
-    item_name                VARCHAR(200) NULL COMMENT '項目全名',
-    unit                     VARCHAR(50)  NULL,
-    sort_order               INT          NOT NULL DEFAULT 0,
-    active                   BOOLEAN      NOT NULL DEFAULT TRUE,
-    remark                   TEXT         NULL,
-    created_at               DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at               DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-
-    UNIQUE KEY uq_items_instrument_code (instrument_serial_number, item_code),
-    INDEX idx_items_group (group_id),
-    CONSTRAINT fk_items_instrument
-        FOREIGN KEY (instrument_serial_number) REFERENCES instruments(serial_number),
-    CONSTRAINT fk_items_group
-        FOREIGN KEY (group_id) REFERENCES lab_group(group_id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
-
--- -------------------------------------------------------------
--- 4. specimen_type : 檢體類別主檔 (UUID PK，固定清單 lookup)
---    如 BLOOD(B) / URINE(U) / CSF(CSF)。
---    試劑可操作的檢體為多對多 (reagent_specimen_map)；
---    品管液則各針對一種檢體 (reagent_qc.specimen_type_id)。
--- -------------------------------------------------------------
-CREATE TABLE specimen_type (
+-- A3. 檢體別字典
+CREATE TABLE specimen_types (
     specimen_type_id CHAR(36)     NOT NULL DEFAULT UUID() PRIMARY KEY,
-    code             VARCHAR(20)  NOT NULL UNIQUE COMMENT '檢體代碼，如 B / U / CSF',
-    name             VARCHAR(100) NOT NULL COMMENT '檢體名稱，如 BLOOD / URINE / CSF',
-    description      VARCHAR(255) NULL,
+    specimen_code    VARCHAR(30)  NOT NULL COMMENT '如 B / U / CSF',
+    specimen_name    VARCHAR(100) NOT NULL COMMENT '如 BLOOD / URINE / CSF',
+    description      VARCHAR(500) NULL,
     active           BOOLEAN      NOT NULL DEFAULT TRUE,
-    created_at       DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at       DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+    created_at       DATETIME(6)  NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    updated_at       DATETIME(6)  NOT NULL DEFAULT CURRENT_TIMESTAMP(6)
+                                  ON UPDATE CURRENT_TIMESTAMP(6),
+    UNIQUE KEY uq_specimen_types_code (specimen_code)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 
--- -------------------------------------------------------------
--- 5. reagent : 試劑主檔 (UUID PK)
---    管理試劑入庫、試劑平測、批號延續性
--- -------------------------------------------------------------
-CREATE TABLE reagent (
-    reagent_id               CHAR(36)     NOT NULL DEFAULT UUID() PRIMARY KEY,
-    group_id                 CHAR(36)     NULL COMMENT 'FK → lab_group.group_id',
-    instrument_serial_number VARCHAR(100) NULL COMMENT 'FK → instruments.serial_number (此試劑用於哪台儀器)',
-    test_item                VARCHAR(100) NOT NULL COMMENT '對應檢驗項目，如 GLU / WBC',
-    reagent_name             VARCHAR(200) NOT NULL,
-    lot_number               VARCHAR(100) NOT NULL COMMENT '試劑批號',
-    manufacturer             VARCHAR(200) NULL,
-
-    in_stock                 BOOLEAN      NOT NULL DEFAULT FALSE COMMENT '是否已入庫',
-    in_stock_date            DATE         NULL     COMMENT '入庫日期',
-
-    parallel_test_done       BOOLEAN      NOT NULL DEFAULT FALSE COMMENT '入庫後是否已完成試劑平行測試 (平測)',
-    parallel_test_date       DATE         NULL     COMMENT '試劑平測完成日期',
-
-    same_lot_as_previous     BOOLEAN      NOT NULL DEFAULT FALSE COMMENT '是否與上一個批號為同一批號',
-    previous_lot_number      VARCHAR(100) NULL     COMMENT '上一個批號 (供批號延續性追溯)',
-
-    expiry_date              DATE         NULL     COMMENT '效期',
-    active                   BOOLEAN      NOT NULL DEFAULT TRUE,
-    remark                   TEXT         NULL,
-    created_at               DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at               DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-
-    INDEX idx_reagent_group (group_id),
-    INDEX idx_reagent_instrument (instrument_serial_number),
-    INDEX idx_reagent_item (test_item),
-    INDEX idx_reagent_lot (lot_number),
-    CONSTRAINT fk_reagent_group
-        FOREIGN KEY (group_id) REFERENCES lab_group(group_id),
-    CONSTRAINT fk_reagent_instrument
-        FOREIGN KEY (instrument_serial_number) REFERENCES instruments(serial_number)
+-- A4. 檢驗項目字典（全院共用；不再綁儀器）
+CREATE TABLE test_items (
+    test_item_id CHAR(36)     NOT NULL DEFAULT UUID() PRIMARY KEY,
+    item_code    VARCHAR(50)  NOT NULL COMMENT '如 GLU / Na / WBC / NEUT%',
+    item_name    VARCHAR(150) NULL,
+    loinc_code   VARCHAR(30)  NULL,
+    default_unit VARCHAR(50)  NULL,
+    description  VARCHAR(500) NULL,
+    active       BOOLEAN      NOT NULL DEFAULT TRUE,
+    created_at   DATETIME(6)  NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    updated_at   DATETIME(6)  NOT NULL DEFAULT CURRENT_TIMESTAMP(6)
+                              ON UPDATE CURRENT_TIMESTAMP(6),
+    UNIQUE KEY uq_test_items_code (item_code),
+    KEY idx_test_items_name (item_name)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 
--- -------------------------------------------------------------
--- 6. reagent_qc : 品管液主檔 (UUID PK)
---    品管液本身也是一種試劑，但具有不同濃度 (level)，
---    且需追蹤平行測試後的新 standard mean / SD。
---    「品管管理哪些試劑」為多對多，見 qc_reagent_map。
---    同一檢驗項目、不同檢體使用不同品管液，故各針對一種檢體
---    (specimen_type_id)，如 Na: Urine 用 Liquichek Urine Control、
---    BLOOD 用 PreciControl Clinchem Multi。
--- -------------------------------------------------------------
-CREATE TABLE reagent_qc (
-    reagent_qc_id            CHAR(36)     NOT NULL DEFAULT UUID() PRIMARY KEY,
-    group_id                 CHAR(36)     NULL COMMENT 'FK → lab_group.group_id',
-    instrument_serial_number VARCHAR(100) NULL COMMENT 'FK → instruments.serial_number',
-    specimen_type_id         CHAR(36)     NULL COMMENT 'FK → specimen_type.specimen_type_id (此品管液針對的檢體類別)',
-
-    test_item                VARCHAR(100) NOT NULL,
-    test_item_full_name      VARCHAR(200) NULL,
-    qc_level                 VARCHAR(50)  NOT NULL COMMENT '品管液濃度，如 Level 1 / Level 2 / Level 3',
-    qc_lot_number            VARCHAR(100) NOT NULL COMMENT '品管液批號',
-    unit                     VARCHAR(50)  NULL,
-
-    manufacturer_mean        DECIMAL(15,4) NULL COMMENT '原廠 (或前批) 均值',
-    manufacturer_sd          DECIMAL(15,6) NULL COMMENT '原廠 (或前批) SD',
-
-    parallel_test_done       BOOLEAN      NOT NULL DEFAULT FALSE COMMENT '此品管液是否已完成平行測試',
-    parallel_test_date       DATE         NULL     COMMENT '平行測試完成日期',
-    new_standard_mean        DECIMAL(15,4) NULL COMMENT '平行測試後建立的新 standard mean',
-    new_standard_sd          DECIMAL(15,6) NULL COMMENT '平行測試後建立的新 standard SD',
-
-    in_use                   BOOLEAN      NOT NULL DEFAULT TRUE COMMENT '是否為目前使用中的品管液',
-    active                   BOOLEAN      NOT NULL DEFAULT TRUE,
-    remark                   TEXT         NULL,
-    created_at               DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at               DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-
-    INDEX idx_rqc_group (group_id),
-    INDEX idx_rqc_instrument (instrument_serial_number),
-    INDEX idx_rqc_item_level (test_item, qc_level),
-    INDEX idx_rqc_lot (qc_lot_number),
-    INDEX idx_rqc_specimen (specimen_type_id),
-    CONSTRAINT fk_rqc_group
-        FOREIGN KEY (group_id) REFERENCES lab_group(group_id),
-    CONSTRAINT fk_rqc_instrument
-        FOREIGN KEY (instrument_serial_number) REFERENCES instruments(serial_number),
-    CONSTRAINT fk_rqc_specimen
-        FOREIGN KEY (specimen_type_id) REFERENCES specimen_type(specimen_type_id)
+-- A5. 檢驗設定（整個模型的中心）= 儀器 × 項目 × 檢體
+CREATE TABLE instrument_assays (
+    assay_id             CHAR(36)     NOT NULL DEFAULT UUID() PRIMARY KEY,
+    instrument_id        CHAR(36)     NOT NULL,
+    test_item_id         CHAR(36)     NOT NULL,
+    specimen_type_id     CHAR(36)     NOT NULL,
+    instrument_test_code VARCHAR(80)  NULL COMMENT '儀器端的項目代碼',
+    method_name          VARCHAR(150) NULL,
+    result_unit          VARCHAR(50)  NULL COMMENT '留空則採 test_items.default_unit',
+    decimal_places       TINYINT UNSIGNED NOT NULL DEFAULT 2,
+    active               BOOLEAN      NOT NULL DEFAULT TRUE,
+    valid_from           DATE         NULL,
+    valid_to             DATE         NULL,
+    created_at           DATETIME(6)  NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    updated_at           DATETIME(6)  NOT NULL DEFAULT CURRENT_TIMESTAMP(6)
+                                      ON UPDATE CURRENT_TIMESTAMP(6),
+    UNIQUE KEY uq_assay_route (instrument_id, test_item_id, specimen_type_id),
+    -- 供下游以複合 FK 確保「結果確實屬於該儀器」
+    UNIQUE KEY uq_assay_id_instrument (assay_id, instrument_id),
+    KEY idx_assays_item_specimen (test_item_id, specimen_type_id, active),
+    KEY idx_assays_specimen_item (specimen_type_id, test_item_id, active),
+    CONSTRAINT chk_assays_decimal_places CHECK (decimal_places <= 8),
+    CONSTRAINT chk_assays_dates
+        CHECK (valid_to IS NULL OR valid_from IS NULL OR valid_to >= valid_from),
+    CONSTRAINT fk_assays_instrument
+        FOREIGN KEY (instrument_id) REFERENCES instruments(instrument_id)
+        ON UPDATE RESTRICT ON DELETE RESTRICT,
+    CONSTRAINT fk_assays_test_item
+        FOREIGN KEY (test_item_id) REFERENCES test_items(test_item_id)
+        ON UPDATE RESTRICT ON DELETE RESTRICT,
+    CONSTRAINT fk_assays_specimen
+        FOREIGN KEY (specimen_type_id) REFERENCES specimen_types(specimen_type_id)
+        ON UPDATE RESTRICT ON DELETE RESTRICT
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 
--- -------------------------------------------------------------
--- 7. reagent_specimen_map : 試劑 ↔ 檢體 關聯 (多對多)
---    同一種試劑可操作多種檢體，如 m-ALB 可驗 URINE 與 CSF。
--- -------------------------------------------------------------
-CREATE TABLE reagent_specimen_map (
-    id               BIGINT   NOT NULL AUTO_INCREMENT PRIMARY KEY,
-    reagent_id       CHAR(36) NOT NULL COMMENT 'FK → reagent.reagent_id',
-    specimen_type_id CHAR(36) NOT NULL COMMENT 'FK → specimen_type.specimen_type_id',
-    created_at       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+-- A6. 三種產品主檔（皆不放批號；不綁儀器，靠 requirement 連到 assay）
+CREATE TABLE reagent_products (
+    reagent_product_id CHAR(36)     NOT NULL DEFAULT UUID() PRIMARY KEY,
+    product_code       VARCHAR(60)  NOT NULL,
+    product_name       VARCHAR(180) NOT NULL,
+    manufacturer       VARCHAR(150) NULL,
+    catalog_number     VARCHAR(100) NULL,
+    storage_condition  VARCHAR(255) NULL,
+    active             BOOLEAN      NOT NULL DEFAULT TRUE,
+    created_at         DATETIME(6)  NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    updated_at         DATETIME(6)  NOT NULL DEFAULT CURRENT_TIMESTAMP(6)
+                                    ON UPDATE CURRENT_TIMESTAMP(6),
+    UNIQUE KEY uq_reagent_products_code (product_code),
+    KEY idx_reagent_products_name (product_name)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
-    UNIQUE KEY uq_reagent_specimen (reagent_id, specimen_type_id),
-    INDEX idx_rsmap_specimen (specimen_type_id),
-    CONSTRAINT fk_rsmap_reagent
-        FOREIGN KEY (reagent_id) REFERENCES reagent(reagent_id) ON DELETE CASCADE,
-    CONSTRAINT fk_rsmap_specimen
-        FOREIGN KEY (specimen_type_id) REFERENCES specimen_type(specimen_type_id) ON DELETE CASCADE
+CREATE TABLE qc_products (
+    qc_product_id      CHAR(36)     NOT NULL DEFAULT UUID() PRIMARY KEY,
+    product_code       VARCHAR(60)  NOT NULL,
+    product_name       VARCHAR(180) NOT NULL,
+    manufacturer       VARCHAR(150) NULL,
+    catalog_number     VARCHAR(100) NULL,
+    matrix_description VARCHAR(255) NULL,
+    storage_condition  VARCHAR(255) NULL,
+    active             BOOLEAN      NOT NULL DEFAULT TRUE,
+    created_at         DATETIME(6)  NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    updated_at         DATETIME(6)  NOT NULL DEFAULT CURRENT_TIMESTAMP(6)
+                                    ON UPDATE CURRENT_TIMESTAMP(6),
+    UNIQUE KEY uq_qc_products_code (product_code),
+    KEY idx_qc_products_name (product_name)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE calibrator_products (
+    calibrator_product_id CHAR(36)     NOT NULL DEFAULT UUID() PRIMARY KEY,
+    product_code          VARCHAR(60)  NOT NULL,
+    product_name          VARCHAR(180) NOT NULL,
+    manufacturer          VARCHAR(150) NULL,
+    catalog_number        VARCHAR(100) NULL,
+    matrix_description    VARCHAR(255) NULL,
+    storage_condition     VARCHAR(255) NULL,
+    active                BOOLEAN      NOT NULL DEFAULT TRUE,
+    created_at            DATETIME(6)  NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    updated_at            DATETIME(6)  NOT NULL DEFAULT CURRENT_TIMESTAMP(6)
+                                       ON UPDATE CURRENT_TIMESTAMP(6),
+    UNIQUE KEY uq_calibrator_products_code (product_code),
+    KEY idx_calibrator_products_name (product_name)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 
--- -------------------------------------------------------------
--- 8. qc_reagent_map : 品管 ↔ 試劑 關聯 (多對多)
---    一個品管 (reagent_qc) 可管理多種試劑；一個試劑亦可被多個品管涵蓋。
--- -------------------------------------------------------------
-CREATE TABLE qc_reagent_map (
-    id            BIGINT   NOT NULL AUTO_INCREMENT PRIMARY KEY,
-    reagent_qc_id CHAR(36) NOT NULL COMMENT 'FK → reagent_qc.reagent_qc_id',
-    reagent_id    CHAR(36) NOT NULL COMMENT 'FK → reagent.reagent_id',
-    created_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+-- A7. 三張 N:M mapping（assay ↔ 產品）
+-- 一個 assay 可能需要多支試劑（主試劑 / 稀釋液 / 清洗液），同一支試劑也可服務多個 assay
+CREATE TABLE assay_reagent_requirements (
+    assay_id           CHAR(36)     NOT NULL,
+    reagent_product_id CHAR(36)     NOT NULL,
+    reagent_role       VARCHAR(30)  NOT NULL DEFAULT 'PRIMARY',
+    required           BOOLEAN      NOT NULL DEFAULT TRUE,
+    priority           SMALLINT UNSIGNED NOT NULL DEFAULT 1,
+    note               VARCHAR(500) NULL,
+    created_at         DATETIME(6)  NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    PRIMARY KEY (assay_id, reagent_product_id, reagent_role),
+    KEY idx_arr_product_assay (reagent_product_id, assay_id),
+    CONSTRAINT chk_arr_role
+        CHECK (reagent_role IN ('PRIMARY', 'AUXILIARY', 'DILUENT', 'WASH', 'OTHER')),
+    CONSTRAINT fk_arr_assay
+        FOREIGN KEY (assay_id) REFERENCES instrument_assays(assay_id)
+        ON UPDATE RESTRICT ON DELETE CASCADE,
+    CONSTRAINT fk_arr_product
+        FOREIGN KEY (reagent_product_id) REFERENCES reagent_products(reagent_product_id)
+        ON UPDATE RESTRICT ON DELETE RESTRICT
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
-    UNIQUE KEY uq_qc_reagent (reagent_qc_id, reagent_id),
-    INDEX idx_qcmap_reagent (reagent_id),
-    CONSTRAINT fk_qcmap_rqc
-        FOREIGN KEY (reagent_qc_id) REFERENCES reagent_qc(reagent_qc_id) ON DELETE CASCADE,
-    CONSTRAINT fk_qcmap_reagent
-        FOREIGN KEY (reagent_id) REFERENCES reagent(reagent_id) ON DELETE CASCADE
+-- 一瓶多項目品管液可涵蓋多個 assay
+CREATE TABLE assay_qc_requirements (
+    assay_id      CHAR(36)     NOT NULL,
+    qc_product_id CHAR(36)     NOT NULL,
+    required      BOOLEAN      NOT NULL DEFAULT TRUE,
+    priority      SMALLINT UNSIGNED NOT NULL DEFAULT 1,
+    note          VARCHAR(500) NULL,
+    created_at    DATETIME(6)  NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    PRIMARY KEY (assay_id, qc_product_id),
+    KEY idx_aqr_product_assay (qc_product_id, assay_id),
+    CONSTRAINT fk_aqr_assay
+        FOREIGN KEY (assay_id) REFERENCES instrument_assays(assay_id)
+        ON UPDATE RESTRICT ON DELETE CASCADE,
+    CONSTRAINT fk_aqr_product
+        FOREIGN KEY (qc_product_id) REFERENCES qc_products(qc_product_id)
+        ON UPDATE RESTRICT ON DELETE RESTRICT
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE assay_calibrator_requirements (
+    assay_id              CHAR(36)     NOT NULL,
+    calibrator_product_id CHAR(36)     NOT NULL,
+    required              BOOLEAN      NOT NULL DEFAULT TRUE,
+    priority              SMALLINT UNSIGNED NOT NULL DEFAULT 1,
+    note                  VARCHAR(500) NULL,
+    created_at            DATETIME(6)  NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    PRIMARY KEY (assay_id, calibrator_product_id),
+    KEY idx_acr_product_assay (calibrator_product_id, assay_id),
+    CONSTRAINT fk_acr_assay
+        FOREIGN KEY (assay_id) REFERENCES instrument_assays(assay_id)
+        ON UPDATE RESTRICT ON DELETE CASCADE,
+    CONSTRAINT fk_acr_product
+        FOREIGN KEY (calibrator_product_id)
+        REFERENCES calibrator_products(calibrator_product_id)
+        ON UPDATE RESTRICT ON DELETE RESTRICT
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 
--- -------------------------------------------------------------
--- 9. reagent_item_map : 試劑 ↔ 項目 關聯 (多對多)
---    一個試劑可用於多個檢驗項目；一個項目亦可由多個試劑產生。
--- -------------------------------------------------------------
-CREATE TABLE reagent_item_map (
-    id         BIGINT   NOT NULL AUTO_INCREMENT PRIMARY KEY,
-    reagent_id CHAR(36) NOT NULL COMMENT 'FK → reagent.reagent_id',
-    item_id    CHAR(36) NOT NULL COMMENT 'FK → items.item_id',
-    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+-- ==========================================================================
+-- B. 批號／庫存實體層
+--    換批號只新增 lot，不新建 product；設定與關聯完全不受影響。
+-- ==========================================================================
 
-    UNIQUE KEY uq_reagent_item (reagent_id, item_id),
-    INDEX idx_rimap_item (item_id),
-    CONSTRAINT fk_rimap_reagent
-        FOREIGN KEY (reagent_id) REFERENCES reagent(reagent_id) ON DELETE CASCADE,
-    CONSTRAINT fk_rimap_item
-        FOREIGN KEY (item_id) REFERENCES items(item_id) ON DELETE CASCADE
+-- B1. 試劑批號（含本系統既有的「入庫 / 平測 / 批號延續性」欄位）
+CREATE TABLE reagent_lots (
+    reagent_lot_id     CHAR(36)     NOT NULL DEFAULT UUID() PRIMARY KEY,
+    reagent_product_id CHAR(36)     NOT NULL,
+    lot_number         VARCHAR(100) NOT NULL,
+    received_at        DATE         NULL COMMENT '入庫日',
+    opened_at          DATETIME(6)  NULL COMMENT '開封時間',
+    expiry_date        DATE         NULL,
+    quantity_received  DECIMAL(14,3) NULL,
+    quantity_unit      VARCHAR(30)  NULL,
+    lot_status         VARCHAR(20)  NOT NULL DEFAULT 'AVAILABLE',
+    -- 既有系統的平測流程（參考設計未涵蓋，此處保留）
+    parallel_test_done BOOLEAN      NOT NULL DEFAULT FALSE COMMENT '入庫後是否已完成試劑平測',
+    parallel_test_date DATE         NULL,
+    same_lot_as_previous BOOLEAN    NOT NULL DEFAULT FALSE COMMENT '是否與上一批為同一批號',
+    previous_reagent_lot_id CHAR(36) NULL COMMENT '上一批，供批號延續性追溯',
+    certificate_uri    VARCHAR(500) NULL,
+    note               VARCHAR(500) NULL,
+    created_at         DATETIME(6)  NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    updated_at         DATETIME(6)  NOT NULL DEFAULT CURRENT_TIMESTAMP(6)
+                                    ON UPDATE CURRENT_TIMESTAMP(6),
+    UNIQUE KEY uq_reagent_lot (reagent_product_id, lot_number),
+    UNIQUE KEY uq_reagent_lot_product (reagent_lot_id, reagent_product_id),
+    KEY idx_reagent_lots_expiry_status (expiry_date, lot_status),
+    KEY idx_reagent_lots_prev (previous_reagent_lot_id),
+    CONSTRAINT chk_reagent_lots_status
+        CHECK (lot_status IN ('QUARANTINE','AVAILABLE','IN_USE','EXHAUSTED','EXPIRED','RECALLED')),
+    CONSTRAINT chk_reagent_lots_dates
+        CHECK (expiry_date IS NULL OR received_at IS NULL OR expiry_date >= received_at),
+    CONSTRAINT fk_reagent_lots_product
+        FOREIGN KEY (reagent_product_id) REFERENCES reagent_products(reagent_product_id)
+        ON UPDATE RESTRICT ON DELETE RESTRICT,
+    CONSTRAINT fk_reagent_lots_prev
+        FOREIGN KEY (previous_reagent_lot_id) REFERENCES reagent_lots(reagent_lot_id)
+        ON UPDATE RESTRICT ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 
--- -------------------------------------------------------------
--- 10. qc_records : 品管紀錄 (改為關聯式)
---    以 FK 連結組別 / 儀器 / 品管液；同時保留關鍵欄位「快照」，
---    因為 mean/SD 會隨平測改變，紀錄須留下當下實際採用的數值供稽核。
--- -------------------------------------------------------------
-CREATE TABLE qc_records (
-    id                        BIGINT       NOT NULL AUTO_INCREMENT PRIMARY KEY,
-
-    -- 關聯 FK
-    reagent_qc_id             CHAR(36)     NULL COMMENT 'FK → reagent_qc.reagent_qc_id (此筆品管使用的品管液)',
-    group_id                  CHAR(36)     NULL COMMENT 'FK → lab_group.group_id',
-    instrument_serial_number  VARCHAR(100) NOT NULL COMMENT 'FK → instruments.serial_number',
-
-    -- 快照欄位 (紀錄當下的實際值，不隨主檔異動)
-    instrument_name           VARCHAR(200) NOT NULL,
-    test_item                 VARCHAR(100) NOT NULL,
-    test_item_full_name       VARCHAR(200) NULL,
-    qc_level                  VARCHAR(50)  NULL,
-    qc_lot_number             VARCHAR(100) NULL,
-    unit                      VARCHAR(50)  NULL,
-    lot_mean                  DECIMAL(15,4) NULL COMMENT '本次採用的均值 (快照)',
-    lot_standard_deviation    DECIMAL(15,6) NULL COMMENT '本次採用的 SD (快照)',
-    acceptable_range_lower    DECIMAL(15,4) NULL,
-    acceptable_range_upper    DECIMAL(15,4) NULL,
-
-    -- 量測與判讀
-    qc_date                   DATE         NOT NULL,
-    qc_time                   TIME         NOT NULL,
-    operator                  VARCHAR(100) NULL,
-    qc_result_value           DECIMAL(15,4) NULL,
-    z_score                   DECIMAL(10,2) NULL,
-    qc_status                 VARCHAR(20)  NOT NULL DEFAULT 'Pass' COMMENT 'Pass / Warning / Fail',
-    westgard_rule_violation   TEXT         NULL,
-    remark                    TEXT         NULL,
-    created_at                DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
-
-    INDEX idx_qc_date (qc_date),
-    INDEX idx_qc_instrument (instrument_serial_number),
-    INDEX idx_qc_group (group_id),
-    INDEX idx_qc_rqc (reagent_qc_id),
-    INDEX idx_qc_item (test_item),
-    INDEX idx_qc_sn_item_level (instrument_serial_number, test_item, qc_level),
-
-    CONSTRAINT fk_qc_instrument
-        FOREIGN KEY (instrument_serial_number) REFERENCES instruments(serial_number),
-    CONSTRAINT fk_qc_group
-        FOREIGN KEY (group_id) REFERENCES lab_group(group_id),
-    CONSTRAINT fk_qc_rqc
-        FOREIGN KEY (reagent_qc_id) REFERENCES reagent_qc(reagent_qc_id)
+-- B2. 品管液批號：同一 kit 的 Level 1/2/3 各一列
+CREATE TABLE qc_lots (
+    qc_lot_id          CHAR(36)     NOT NULL DEFAULT UUID() PRIMARY KEY,
+    qc_product_id      CHAR(36)     NOT NULL,
+    lot_number         VARCHAR(100) NOT NULL,
+    level_code         VARCHAR(30)  NOT NULL COMMENT '如 Level 1 / Ci-Trol 1',
+    received_at        DATE         NULL,
+    opened_at          DATETIME(6)  NULL,
+    expiry_date        DATE         NULL,
+    lot_status         VARCHAR(20)  NOT NULL DEFAULT 'AVAILABLE',
+    -- 平測狀態；平測後的實際 mean/SD 以 qc_target_values(target_source='LAB') 表示
+    parallel_test_done BOOLEAN      NOT NULL DEFAULT FALSE COMMENT '此批是否已完成平行測試',
+    parallel_test_date DATE         NULL,
+    certificate_uri    VARCHAR(500) NULL,
+    note               VARCHAR(500) NULL,
+    created_at         DATETIME(6)  NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    updated_at         DATETIME(6)  NOT NULL DEFAULT CURRENT_TIMESTAMP(6)
+                                    ON UPDATE CURRENT_TIMESTAMP(6),
+    UNIQUE KEY uq_qc_lot_level (qc_product_id, lot_number, level_code),
+    UNIQUE KEY uq_qc_lot_product (qc_lot_id, qc_product_id),
+    KEY idx_qc_lots_expiry_status (expiry_date, lot_status),
+    CONSTRAINT chk_qc_lots_status
+        CHECK (lot_status IN ('QUARANTINE','AVAILABLE','IN_USE','EXHAUSTED','EXPIRED','RECALLED')),
+    CONSTRAINT chk_qc_lots_dates
+        CHECK (expiry_date IS NULL OR received_at IS NULL OR expiry_date >= received_at),
+    CONSTRAINT fk_qc_lots_product
+        FOREIGN KEY (qc_product_id) REFERENCES qc_products(qc_product_id)
+        ON UPDATE RESTRICT ON DELETE RESTRICT
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 
--- =============================================================
--- 種子資料：組別主檔 (4 個固定組別)
--- =============================================================
-INSERT INTO lab_group (group_name, group_code, description) VALUES
-    ('生化免疫組', 'BIO', '臨床生化與免疫檢驗'),
-    ('血液組',     'HEM', '血液學與凝固檢驗'),
-    ('鏡檢組',     'URN', '尿液與鏡檢'),
-    ('血庫組',     'BB',  '輸血醫學 / 血庫');
+-- B3. 校正液批號
+CREATE TABLE calibrator_lots (
+    calibrator_lot_id     CHAR(36)     NOT NULL DEFAULT UUID() PRIMARY KEY,
+    calibrator_product_id CHAR(36)     NOT NULL,
+    lot_number            VARCHAR(100) NOT NULL,
+    level_code            VARCHAR(30)  NOT NULL DEFAULT 'DEFAULT',
+    assigned_value_text   VARCHAR(500) NULL COMMENT '原廠指定值（多項目時以文字或 JSON 記錄）',
+    received_at           DATE         NULL,
+    opened_at             DATETIME(6)  NULL,
+    expiry_date           DATE         NULL,
+    lot_status            VARCHAR(20)  NOT NULL DEFAULT 'AVAILABLE',
+    certificate_uri       VARCHAR(500) NULL,
+    note                  VARCHAR(500) NULL,
+    created_at            DATETIME(6)  NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    updated_at            DATETIME(6)  NOT NULL DEFAULT CURRENT_TIMESTAMP(6)
+                                       ON UPDATE CURRENT_TIMESTAMP(6),
+    UNIQUE KEY uq_calibrator_lot_level (calibrator_product_id, lot_number, level_code),
+    UNIQUE KEY uq_calibrator_lot_product (calibrator_lot_id, calibrator_product_id),
+    KEY idx_calibrator_lots_expiry_status (expiry_date, lot_status),
+    CONSTRAINT chk_calibrator_lots_status
+        CHECK (lot_status IN ('QUARANTINE','AVAILABLE','IN_USE','EXHAUSTED','EXPIRED','RECALLED')),
+    CONSTRAINT chk_calibrator_lots_dates
+        CHECK (expiry_date IS NULL OR received_at IS NULL OR expiry_date >= received_at),
+    CONSTRAINT fk_calibrator_lots_product
+        FOREIGN KEY (calibrator_product_id)
+        REFERENCES calibrator_products(calibrator_product_id)
+        ON UPDATE RESTRICT ON DELETE RESTRICT
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 
--- =============================================================
--- 種子資料：檢體類別主檔 (固定清單，可再由 API 增補)
--- =============================================================
-INSERT INTO specimen_type (code, name, description) VALUES
-    ('B',   'BLOOD', '全血 / 血清 / 血漿'),
-    ('U',   'URINE', '尿液'),
-    ('CSF', 'CSF',   '腦脊髓液'),
-    ('BF',  'BODY FLUID', '體液 (胸水 / 腹水等)'),
-    ('ST',  'STOOL', '糞便');
+-- B4. 品管目標值：每個 assay × QC 批號/濃度 的 mean/SD，且版本化
+--     平測前用原廠值(MANUFACTURER)，平測後建立實驗室值(LAB)。
+--     current_slot 讓「同一 assay+lot 只能有一筆生效中版本」由 DB 保證。
+CREATE TABLE qc_target_values (
+    qc_target_id    CHAR(36)      NOT NULL DEFAULT UUID() PRIMARY KEY,
+    assay_id        CHAR(36)      NOT NULL,
+    qc_lot_id       CHAR(36)      NOT NULL,
+    qc_product_id   CHAR(36)      NOT NULL,
+    target_source   VARCHAR(20)   NOT NULL COMMENT 'MANUFACTURER / LAB / PEER_GROUP',
+    target_mean     DECIMAL(18,6) NOT NULL,
+    target_sd       DECIMAL(18,6) NOT NULL,
+    acceptable_low  DECIMAL(18,6) NULL,
+    acceptable_high DECIMAL(18,6) NULL,
+    effective_from  DATETIME(6)   NOT NULL,
+    effective_to    DATETIME(6)   NULL COMMENT 'NULL = 目前生效中',
+    approved_by     VARCHAR(100)  NULL,
+    approved_at     DATETIME(6)   NULL,
+    note            VARCHAR(500)  NULL,
+    current_slot    TINYINT GENERATED ALWAYS AS
+                    (CASE WHEN effective_to IS NULL THEN 1 ELSE NULL END) STORED,
+    created_at      DATETIME(6)   NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    UNIQUE KEY uq_qc_target_version (assay_id, qc_lot_id, effective_from),
+    UNIQUE KEY uq_qc_target_current (assay_id, qc_lot_id, current_slot),
+    UNIQUE KEY uq_qc_target_identity (qc_target_id, assay_id, qc_lot_id, qc_product_id),
+    KEY idx_qc_target_lot_assay (qc_lot_id, assay_id),
+    CONSTRAINT chk_qc_target_source
+        CHECK (target_source IN ('MANUFACTURER', 'LAB', 'PEER_GROUP')),
+    CONSTRAINT chk_qc_target_sd CHECK (target_sd > 0),
+    CONSTRAINT chk_qc_target_range
+        CHECK (acceptable_low IS NULL OR acceptable_high IS NULL
+               OR acceptable_high >= acceptable_low),
+    CONSTRAINT chk_qc_target_dates
+        CHECK (effective_to IS NULL OR effective_to > effective_from),
+    CONSTRAINT fk_qc_target_assay
+        FOREIGN KEY (assay_id) REFERENCES instrument_assays(assay_id)
+        ON UPDATE RESTRICT ON DELETE RESTRICT,
+    CONSTRAINT fk_qc_target_lot_product
+        FOREIGN KEY (qc_lot_id, qc_product_id)
+        REFERENCES qc_lots(qc_lot_id, qc_product_id)
+        ON UPDATE RESTRICT ON DELETE RESTRICT,
+    -- 保證此 QC 產品確實被該 assay 允許使用
+    CONSTRAINT fk_qc_target_requirement
+        FOREIGN KEY (assay_id, qc_product_id)
+        REFERENCES assay_qc_requirements(assay_id, qc_product_id)
+        ON UPDATE RESTRICT ON DELETE RESTRICT
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+-- B5. 試劑上機紀錄：哪一批試劑何時裝到哪台儀器哪個位置
+CREATE TABLE instrument_reagent_loads (
+    reagent_load_id CHAR(36)     NOT NULL DEFAULT UUID() PRIMARY KEY,
+    instrument_id   CHAR(36)     NOT NULL,
+    reagent_lot_id  CHAR(36)     NOT NULL,
+    position_code   VARCHAR(50)  NOT NULL COMMENT '儀器上的位置代碼',
+    loaded_at       DATETIME(6)  NOT NULL,
+    unloaded_at     DATETIME(6)  NULL,
+    loaded_by       VARCHAR(100) NULL,
+    unloaded_by     VARCHAR(100) NULL,
+    current_slot    TINYINT GENERATED ALWAYS AS
+                    (CASE WHEN unloaded_at IS NULL THEN 1 ELSE NULL END) STORED,
+    note            VARCHAR(500) NULL,
+    created_at      DATETIME(6)  NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    -- 同一台儀器同一位置同時只能有一批試劑在線上
+    UNIQUE KEY uq_current_instrument_position (instrument_id, position_code, current_slot),
+    KEY idx_reagent_load_lot_time (reagent_lot_id, loaded_at),
+    CONSTRAINT chk_reagent_load_dates
+        CHECK (unloaded_at IS NULL OR unloaded_at >= loaded_at),
+    CONSTRAINT fk_reagent_load_instrument
+        FOREIGN KEY (instrument_id) REFERENCES instruments(instrument_id)
+        ON UPDATE RESTRICT ON DELETE RESTRICT,
+    CONSTRAINT fk_reagent_load_lot
+        FOREIGN KEY (reagent_lot_id) REFERENCES reagent_lots(reagent_lot_id)
+        ON UPDATE RESTRICT ON DELETE RESTRICT
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+-- ==========================================================================
+-- C. 交易／稽核層
+-- ==========================================================================
+
+-- C1. 一次品管執行（一瓶多項目品管液可產生多個項目結果）
+CREATE TABLE qc_runs (
+    qc_run_id         CHAR(36)      NOT NULL DEFAULT UUID() PRIMARY KEY,
+    instrument_id     CHAR(36)      NOT NULL,
+    qc_lot_id         CHAR(36)      NOT NULL,
+    qc_product_id     CHAR(36)      NOT NULL,
+    run_at            DATETIME(6)   NOT NULL,
+    operator_id       VARCHAR(100)  NULL,
+    instrument_run_id VARCHAR(120)  NULL COMMENT '儀器端的執行序號，供對帳',
+    run_status        VARCHAR(20)   NOT NULL DEFAULT 'COMPLETED',
+    note              VARCHAR(1000) NULL,
+    created_at        DATETIME(6)   NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    UNIQUE KEY uq_qc_run_instrument_ref (instrument_id, instrument_run_id),
+    UNIQUE KEY uq_qc_run_identity (qc_run_id, instrument_id, qc_lot_id, qc_product_id),
+    KEY idx_qc_runs_instrument_time (instrument_id, run_at),
+    KEY idx_qc_runs_lot_time (qc_lot_id, run_at),
+    CONSTRAINT chk_qc_runs_status
+        CHECK (run_status IN ('COMPLETED', 'PARTIAL', 'CANCELLED')),
+    CONSTRAINT fk_qc_runs_instrument
+        FOREIGN KEY (instrument_id) REFERENCES instruments(instrument_id)
+        ON UPDATE RESTRICT ON DELETE RESTRICT,
+    CONSTRAINT fk_qc_runs_lot_product
+        FOREIGN KEY (qc_lot_id, qc_product_id)
+        REFERENCES qc_lots(qc_lot_id, qc_product_id)
+        ON UPDATE RESTRICT ON DELETE RESTRICT
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+-- C2. 單一項目的品管結果
+--     刻意保存 mean/SD/unit 快照：主檔日後變更，歷史判讀仍能重現（稽核要求）。
+CREATE TABLE qc_results (
+    qc_result_id         CHAR(36)      NOT NULL DEFAULT UUID() PRIMARY KEY,
+    qc_run_id            CHAR(36)      NOT NULL,
+    instrument_id        CHAR(36)      NOT NULL,
+    assay_id             CHAR(36)      NOT NULL,
+    qc_lot_id            CHAR(36)      NOT NULL,
+    qc_product_id        CHAR(36)      NOT NULL,
+    qc_target_id         CHAR(36)      NULL COMMENT '當時採用的目標值版本',
+    result_value         DECIMAL(18,6) NOT NULL,
+    unit_snapshot        VARCHAR(50)   NULL,
+    target_mean_snapshot DECIMAL(18,6) NULL,
+    target_sd_snapshot   DECIMAL(18,6) NULL,
+    z_score              DECIMAL(18,6) GENERATED ALWAYS AS
+                         ((result_value - target_mean_snapshot)
+                          / NULLIF(target_sd_snapshot, 0)) STORED,
+    result_status        VARCHAR(20)   NOT NULL DEFAULT 'PASS',
+    westgard_flags       JSON          NULL COMMENT '違反的規則清單，如 ["1-3s","2-2s"]',
+    reviewed_by          VARCHAR(100)  NULL,
+    reviewed_at          DATETIME(6)   NULL,
+    note                 VARCHAR(1000) NULL,
+    created_at           DATETIME(6)   NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    UNIQUE KEY uq_qc_result_run_assay (qc_run_id, assay_id),
+    UNIQUE KEY uq_qc_result_id_assay (qc_result_id, assay_id),
+    KEY idx_qc_results_assay_run (assay_id, qc_run_id),
+    KEY idx_qc_results_status_run (result_status, qc_run_id),
+    KEY idx_qc_results_target (qc_target_id),
+    CONSTRAINT chk_qc_results_status
+        CHECK (result_status IN ('PASS', 'WARNING', 'FAIL', 'INVALID')),
+    CONSTRAINT chk_qc_results_target_sd
+        CHECK (target_sd_snapshot IS NULL OR target_sd_snapshot > 0),
+    CONSTRAINT fk_qc_results_run_identity
+        FOREIGN KEY (qc_run_id, instrument_id, qc_lot_id, qc_product_id)
+        REFERENCES qc_runs(qc_run_id, instrument_id, qc_lot_id, qc_product_id)
+        ON UPDATE RESTRICT ON DELETE RESTRICT,
+    -- 保證結果的 assay 確實屬於該次 run 的儀器
+    CONSTRAINT fk_qc_results_assay_instrument
+        FOREIGN KEY (assay_id, instrument_id)
+        REFERENCES instrument_assays(assay_id, instrument_id)
+        ON UPDATE RESTRICT ON DELETE RESTRICT,
+    CONSTRAINT fk_qc_results_requirement
+        FOREIGN KEY (assay_id, qc_product_id)
+        REFERENCES assay_qc_requirements(assay_id, qc_product_id)
+        ON UPDATE RESTRICT ON DELETE RESTRICT,
+    CONSTRAINT fk_qc_results_target
+        FOREIGN KEY (qc_target_id, assay_id, qc_lot_id, qc_product_id)
+        REFERENCES qc_target_values (qc_target_id, assay_id, qc_lot_id, qc_product_id)
+        ON UPDATE RESTRICT ON DELETE RESTRICT
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+-- C3. 該筆品管結果實際使用的試劑批號（可多筆）
+CREATE TABLE qc_result_reagents (
+    qc_result_id       CHAR(36)    NOT NULL,
+    assay_id           CHAR(36)    NOT NULL,
+    reagent_lot_id     CHAR(36)    NOT NULL,
+    reagent_product_id CHAR(36)    NOT NULL,
+    reagent_role       VARCHAR(30) NOT NULL DEFAULT 'PRIMARY',
+    created_at         DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    PRIMARY KEY (qc_result_id, reagent_lot_id, reagent_role),
+    KEY idx_qrr_lot_result (reagent_lot_id, qc_result_id),
+    CONSTRAINT chk_qrr_role
+        CHECK (reagent_role IN ('PRIMARY', 'AUXILIARY', 'DILUENT', 'WASH', 'OTHER')),
+    CONSTRAINT fk_qrr_result_assay
+        FOREIGN KEY (qc_result_id, assay_id)
+        REFERENCES qc_results(qc_result_id, assay_id)
+        ON UPDATE RESTRICT ON DELETE CASCADE,
+    CONSTRAINT fk_qrr_lot_product
+        FOREIGN KEY (reagent_lot_id, reagent_product_id)
+        REFERENCES reagent_lots(reagent_lot_id, reagent_product_id)
+        ON UPDATE RESTRICT ON DELETE RESTRICT,
+    CONSTRAINT fk_qrr_requirement
+        FOREIGN KEY (assay_id, reagent_product_id, reagent_role)
+        REFERENCES assay_reagent_requirements(assay_id, reagent_product_id, reagent_role)
+        ON UPDATE RESTRICT ON DELETE RESTRICT
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+-- C4. 校正事件（一次校正可涵蓋多個 assay）
+CREATE TABLE calibration_events (
+    calibration_event_id  CHAR(36)      NOT NULL DEFAULT UUID() PRIMARY KEY,
+    instrument_id         CHAR(36)      NOT NULL,
+    calibrator_lot_id     CHAR(36)      NOT NULL,
+    calibrator_product_id CHAR(36)      NOT NULL,
+    performed_at          DATETIME(6)   NOT NULL,
+    operator_id           VARCHAR(100)  NULL,
+    calibration_reason    VARCHAR(30)   NOT NULL DEFAULT 'SCHEDULED',
+    event_status          VARCHAR(20)   NOT NULL,
+    instrument_event_id   VARCHAR(120)  NULL,
+    raw_data_uri          VARCHAR(500)  NULL,
+    note                  VARCHAR(1000) NULL,
+    created_at            DATETIME(6)   NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    UNIQUE KEY uq_cal_event_instrument_ref (instrument_id, instrument_event_id),
+    UNIQUE KEY uq_cal_event_identity
+        (calibration_event_id, instrument_id, calibrator_product_id),
+    KEY idx_cal_event_instrument_time (instrument_id, performed_at),
+    KEY idx_cal_event_lot_time (calibrator_lot_id, performed_at),
+    CONSTRAINT chk_cal_event_reason
+        CHECK (calibration_reason IN ('SCHEDULED','NEW_LOT','QC_FAILURE','MAINTENANCE','OTHER')),
+    CONSTRAINT chk_cal_event_status
+        CHECK (event_status IN ('PASS', 'FAIL', 'CANCELLED')),
+    CONSTRAINT fk_cal_event_instrument
+        FOREIGN KEY (instrument_id) REFERENCES instruments(instrument_id)
+        ON UPDATE RESTRICT ON DELETE RESTRICT,
+    CONSTRAINT fk_cal_event_lot_product
+        FOREIGN KEY (calibrator_lot_id, calibrator_product_id)
+        REFERENCES calibrator_lots(calibrator_lot_id, calibrator_product_id)
+        ON UPDATE RESTRICT ON DELETE RESTRICT
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE calibration_event_assays (
+    calibration_event_id  CHAR(36)      NOT NULL,
+    instrument_id         CHAR(36)      NOT NULL,
+    assay_id              CHAR(36)      NOT NULL,
+    calibrator_product_id CHAR(36)      NOT NULL,
+    assay_status          VARCHAR(20)   NOT NULL,
+    pre_bias              DECIMAL(18,6) NULL,
+    post_bias             DECIMAL(18,6) NULL,
+    note                  VARCHAR(500)  NULL,
+    created_at            DATETIME(6)   NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    PRIMARY KEY (calibration_event_id, assay_id),
+    KEY idx_cea_assay_event (assay_id, calibration_event_id),
+    CONSTRAINT chk_cea_status
+        CHECK (assay_status IN ('PASS', 'FAIL', 'NOT_EVALUATED')),
+    CONSTRAINT fk_cea_event_identity
+        FOREIGN KEY (calibration_event_id, instrument_id, calibrator_product_id)
+        REFERENCES calibration_events
+            (calibration_event_id, instrument_id, calibrator_product_id)
+        ON UPDATE RESTRICT ON DELETE CASCADE,
+    CONSTRAINT fk_cea_assay_instrument
+        FOREIGN KEY (assay_id, instrument_id)
+        REFERENCES instrument_assays(assay_id, instrument_id)
+        ON UPDATE RESTRICT ON DELETE RESTRICT,
+    CONSTRAINT fk_cea_calibrator_requirement
+        FOREIGN KEY (assay_id, calibrator_product_id)
+        REFERENCES assay_calibrator_requirements(assay_id, calibrator_product_id)
+        ON UPDATE RESTRICT ON DELETE RESTRICT
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE calibration_event_reagents (
+    calibration_event_id CHAR(36)    NOT NULL,
+    assay_id             CHAR(36)    NOT NULL,
+    reagent_lot_id       CHAR(36)    NOT NULL,
+    reagent_product_id   CHAR(36)    NOT NULL,
+    reagent_role         VARCHAR(30) NOT NULL DEFAULT 'PRIMARY',
+    created_at           DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    PRIMARY KEY (calibration_event_id, assay_id, reagent_lot_id, reagent_role),
+    KEY idx_cer_lot_event (reagent_lot_id, calibration_event_id),
+    CONSTRAINT chk_cer_role
+        CHECK (reagent_role IN ('PRIMARY', 'AUXILIARY', 'DILUENT', 'WASH', 'OTHER')),
+    CONSTRAINT fk_cer_event_assay
+        FOREIGN KEY (calibration_event_id, assay_id)
+        REFERENCES calibration_event_assays(calibration_event_id, assay_id)
+        ON UPDATE RESTRICT ON DELETE CASCADE,
+    CONSTRAINT fk_cer_lot_product
+        FOREIGN KEY (reagent_lot_id, reagent_product_id)
+        REFERENCES reagent_lots(reagent_lot_id, reagent_product_id)
+        ON UPDATE RESTRICT ON DELETE RESTRICT,
+    CONSTRAINT fk_cer_requirement
+        FOREIGN KEY (assay_id, reagent_product_id, reagent_role)
+        REFERENCES assay_reagent_requirements(assay_id, reagent_product_id, reagent_role)
+        ON UPDATE RESTRICT ON DELETE RESTRICT
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+-- ==========================================================================
+-- D. 讀取用 View
+-- ==========================================================================
+
+CREATE VIEW v_assay_catalog AS
+SELECT
+    a.assay_id,
+    s.section_id,
+    s.section_code,
+    s.section_name,
+    i.instrument_id,
+    i.serial_number,
+    i.instrument_name,
+    i.instrument_role,
+    t.test_item_id,
+    t.item_code,
+    t.item_name,
+    sp.specimen_type_id,
+    sp.specimen_code,
+    sp.specimen_name,
+    a.method_name,
+    COALESCE(a.result_unit, t.default_unit) AS result_unit,
+    a.decimal_places,
+    a.active
+FROM instrument_assays AS a
+JOIN instruments    AS i  ON i.instrument_id    = a.instrument_id
+JOIN lab_sections   AS s  ON s.section_id       = i.section_id
+JOIN test_items     AS t  ON t.test_item_id     = a.test_item_id
+JOIN specimen_types AS sp ON sp.specimen_type_id = a.specimen_type_id;
+
+CREATE VIEW v_qc_result_detail AS
+SELECT
+    qr.qc_result_id,
+    qrun.qc_run_id,
+    qrun.run_at,
+    qrun.instrument_run_id,
+    qrun.operator_id,
+    vac.section_name,
+    vac.instrument_id,
+    vac.serial_number,
+    vac.instrument_name,
+    vac.instrument_role,
+    vac.assay_id,
+    vac.item_code,
+    vac.item_name,
+    vac.specimen_code,
+    vac.specimen_name,
+    qp.product_code AS qc_product_code,
+    qp.product_name AS qc_product_name,
+    ql.lot_number   AS qc_lot_number,
+    ql.level_code   AS qc_level,
+    qr.result_value,
+    qr.unit_snapshot,
+    qr.target_mean_snapshot,
+    qr.target_sd_snapshot,
+    qr.z_score,
+    qr.result_status,
+    qr.westgard_flags,
+    qr.reviewed_by,
+    qr.reviewed_at,
+    qr.note
+FROM qc_results AS qr
+JOIN qc_runs         AS qrun ON qrun.qc_run_id     = qr.qc_run_id
+JOIN v_assay_catalog AS vac  ON vac.assay_id       = qr.assay_id
+JOIN qc_lots         AS ql   ON ql.qc_lot_id       = qr.qc_lot_id
+JOIN qc_products     AS qp   ON qp.qc_product_id   = ql.qc_product_id;
+
+
+-- ==========================================================================
+-- E. 種子資料（沿用既有的組別與檢體別）
+-- ==========================================================================
+
+INSERT INTO lab_sections (section_code, section_name, description) VALUES
+    ('BIO',   '生化免疫組', '臨床生化與免疫檢驗'),
+    ('HEM',   '血液組',     '血液學與凝固檢驗'),
+    ('URN',   '鏡檢組',     '尿液與鏡檢'),
+    ('BB',    '血庫組',     '輸血醫學 / 血庫');
+
+INSERT INTO specimen_types (specimen_code, specimen_name, description) VALUES
+    ('B',   'BLOOD',      '全血 / 血清 / 血漿'),
+    ('U',   'URINE',      '尿液'),
+    ('CSF', 'CSF',        '腦脊髓液'),
+    ('BF',  'BODY FLUID', '體液（胸水 / 腹水等）'),
+    ('ST',  'STOOL',      '糞便');
+
+-- 腳本結束。

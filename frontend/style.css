@@ -415,6 +415,109 @@ tbody tr:hover { background: rgba(56,189,248,.06); }
   font-size: 13px; color: var(--text); cursor: pointer;
 }
 .check-row input[type=checkbox] { width: 15px; height: 15px; accent-color: var(--accent); }
+.check-empty { color: var(--muted); font-size: 12px; font-style: italic; }
+.check-group legend code { background: var(--panel-2); padding: 1px 5px; border-radius: 4px; font-size: 11px; }
+
+/* 模式切換頁籤（新增品管液：設定檔 / 新批號）*/
+.mode-tabs { display: flex; gap: 8px; margin-bottom: 12px; }
+.mode-tab {
+  background: transparent; border: 1px solid var(--border); color: var(--muted);
+  padding: 9px 18px; border-radius: 8px; cursor: pointer; font-size: 14px; transition: .15s;
+}
+.mode-tab:hover { color: var(--text); border-color: var(--accent); }
+.mode-tab.active { background: var(--accent); color: var(--accent-text); border-color: var(--accent); font-weight: 600; }
+.mode-hint {
+  color: var(--muted); font-size: 13px; line-height: 1.7; margin: 0 0 16px;
+  padding: 10px 14px; border-left: 3px solid var(--accent); background: var(--panel);
+  border-radius: 0 8px 8px 0;
+}
+.mode-hint code { background: var(--panel-2); padding: 1px 6px; border-radius: 4px; font-size: 12px; }
+.mode-hint strong { color: var(--text); }
+.field-note {
+  color: var(--muted); font-size: 12px; margin: 0; padding: 8px 12px;
+  background: var(--panel); border-radius: 6px; border-left: 3px solid var(--warn);
+}
+.mode-pane { display: none; }
+.mode-pane.active { display: block; }
+form.mode-pane.active { display: grid; }
+
+/* 新批號輸入：各濃度一張卡 */
+.lot-card {
+  background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
+  padding: 16px 18px; margin-bottom: 12px;
+}
+.lot-card-head {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding-bottom: 10px; margin-bottom: 12px; border-bottom: 1px solid var(--border);
+}
+.lot-card-head h4 { margin: 0; font-size: 15px; }
+.lot-current {
+  display: flex; gap: 16px; flex-wrap: wrap; font-size: 12px; color: var(--muted);
+  margin-left: auto;
+}
+.lot-current b { color: var(--text); font-weight: 600; }
+.lot-expiring { color: var(--warn); }
+.lot-expired { color: var(--danger); }
+.lot-fields { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+.lot-fields label { display: flex; flex-direction: column; gap: 6px; font-size: 12px; color: var(--muted); }
+.lot-fields input {
+  background: var(--panel-2); border: 1px solid var(--border); color: var(--text);
+  padding: 8px 10px; border-radius: 7px;
+}
+.lot-fields .check-label { flex-direction: row; align-items: center; gap: 8px; padding-top: 20px; color: var(--text); }
+.lot-fields .check-label input { width: 16px; height: 16px; accent-color: var(--accent); }
+@media (max-width: 900px) { .lot-fields { grid-template-columns: 1fr 1fr; } }
+
+/* 可檢索的下拉複選 */
+.ms { position: relative; width: 100%; }
+.ms-toggle {
+  width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  background: var(--panel-2); border: 1px solid var(--border); color: var(--text);
+  padding: 9px 11px; border-radius: 7px; cursor: pointer; font-size: 13px; text-align: left;
+}
+.ms-toggle:hover, .ms.open .ms-toggle { border-color: var(--accent); }
+.ms-toggle .ms-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ms-toggle .ms-label.empty { color: var(--muted); }
+.ms-toggle .ms-caret { flex-shrink: 0; font-size: 11px; transition: transform .15s; }
+.ms.open .ms-toggle .ms-caret { transform: rotate(180deg); }
+.ms-count {
+  flex-shrink: 0; font-size: 11px; padding: 1px 7px; border-radius: 10px;
+  background: var(--accent); color: var(--accent-text); font-weight: 600;
+}
+
+.ms-panel {
+  display: none; position: absolute; z-index: 30; left: 0; right: 0; top: calc(100% + 4px);
+  background: var(--panel); border: 1px solid var(--accent); border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0,0,0,.28); overflow: hidden;
+}
+.ms.open .ms-panel { display: block; }
+.ms-search-wrap { padding: 8px; border-bottom: 1px solid var(--border); display: flex; gap: 6px; }
+.ms-search {
+  flex: 1; background: var(--panel-2); border: 1px solid var(--border); color: var(--text);
+  padding: 7px 10px; border-radius: 6px; font-size: 13px;
+}
+.ms-search:focus { outline: none; border-color: var(--accent); }
+.ms-bulk {
+  display: flex; gap: 10px; padding: 6px 10px; border-bottom: 1px solid var(--border);
+  font-size: 12px;
+}
+.ms-bulk button {
+  background: none; border: none; color: var(--accent); cursor: pointer; padding: 0; font-size: 12px;
+}
+.ms-bulk button:hover { text-decoration: underline; }
+.ms-bulk .ms-shown { margin-left: auto; color: var(--muted); }
+.ms-options { max-height: 240px; overflow-y: auto; padding: 4px; }
+.ms-options label {
+  display: flex; align-items: center; gap: 8px; padding: 7px 9px; border-radius: 6px;
+  font-size: 13px; cursor: pointer; color: var(--text);
+}
+/* 檢索過濾用：需蓋過上面的 display:flex，否則 hidden 不生效 */
+.ms-options label[hidden] { display: none; }
+.ms-options label:hover { background: var(--panel-2); }
+.ms-options label.ms-active { background: var(--panel-2); outline: 1px solid var(--accent); }
+.ms-options mark { background: rgba(56,189,248,.28); color: inherit; border-radius: 3px; padding: 0 1px; }
+.ms-options input[type=checkbox] { width: 15px; height: 15px; accent-color: var(--accent); flex-shrink: 0; }
+.ms-options .ms-none { color: var(--muted); font-size: 12px; font-style: italic; padding: 10px; }
 .form-actions { display: flex; align-items: center; gap: 16px; }
 .add-msg { font-size: 14px; }
 
