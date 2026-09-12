@@ -13,7 +13,7 @@
       <span class="logo">🧪</span>
       <div>
         <h1>QAQC 品管管理系統</h1>
-        <p class="subtitle">Laboratory Quality Control · Westgard Rules</p>
+        <p class="subtitle">Laboratory Quality Control · Westgard Rules · v3</p>
       </div>
     </div>
     <div class="topbar-right">
@@ -27,595 +27,372 @@
   </header>
 
   <div class="layout">
-    <!-- ============ 側邊選單 ============ -->
     <aside id="sidebar" class="sidebar">
       <nav>
         <button class="nav-link single active" data-view="dashboard">📊 儀表板</button>
 
         <div class="nav-group open">
-          <button class="nav-group-title">➕ 新增 <span class="chev">▾</span></button>
+          <button class="nav-group-title">📝 品管作業 <span class="chev">▾</span></button>
           <div class="nav-sub">
-            <button class="nav-link" data-view="add-instrument">新增儀器</button>
-            <button class="nav-link" data-view="add-item">新增檢驗項目</button>
-            <button class="nav-link" data-view="add-reagent">新增試劑</button>
-            <button class="nav-link" data-view="add-reagent-qc">新增品管液</button>
-            <button class="nav-link" data-view="add-specimen">新增檢體類別</button>
-            <button class="nav-link" data-view="add">新增品管紀錄</button>
+            <button class="nav-link" data-view="qc-run">登錄品管結果</button>
+            <button class="nav-link" data-view="qc-results">品管紀錄查詢</button>
+            <button class="nav-link" data-view="lj">L-J Chart</button>
+            <button class="nav-link" data-view="calibration">校正紀錄</button>
           </div>
         </div>
 
         <div class="nav-group open">
-          <button class="nav-group-title">🗂️ 管理 <span class="chev">▾</span></button>
+          <button class="nav-group-title">⚙️ 檢驗設定 <span class="chev">▾</span></button>
           <div class="nav-sub">
-            <button class="nav-link" data-view="lj">查看 L-J chart</button>
+            <button class="nav-link" data-view="assays">檢驗設定 (assay)</button>
+            <button class="nav-link" data-view="qc-targets">品管目標值與平測</button>
             <button class="nav-link" data-view="er">主檔關聯圖</button>
-            <button class="nav-link" data-view="mg-item">管理檢驗項目</button>
-            <button class="nav-link" data-view="mg-reagent">管理試劑</button>
-            <button class="nav-link" data-view="mg-rqc">管理品管液</button>
-            <button class="nav-link" data-view="ai">AI 判讀 <span class="dev-tag">開發中</span></button>
-            <button class="nav-link disabled" disabled>品管預警 <span class="dev-tag">開發中</span></button>
           </div>
         </div>
 
-        <button class="nav-link single" data-view="records">📋 品管紀錄</button>
-        <button class="nav-link single disabled" disabled>⚙️ 設定</button>
+        <div class="nav-group">
+          <button class="nav-group-title">📦 物料主檔 <span class="chev">▾</span></button>
+          <div class="nav-sub">
+            <button class="nav-link" data-view="products">產品與批號</button>
+            <button class="nav-link" data-view="reagent-loads">試劑上機</button>
+          </div>
+        </div>
+
+        <div class="nav-group">
+          <button class="nav-group-title">🏥 基礎主檔 <span class="chev">▾</span></button>
+          <div class="nav-sub">
+            <button class="nav-link" data-view="instruments">儀器</button>
+            <button class="nav-link" data-view="test-items">檢驗項目字典</button>
+            <button class="nav-link" data-view="specimen-types">檢體類別</button>
+            <button class="nav-link" data-view="sections">組別</button>
+          </div>
+        </div>
+
+        <button class="nav-link single" data-view="ai">🤖 AI 判讀</button>
       </nav>
     </aside>
 
     <main>
-    <!-- ============ Dashboard ============ -->
-    <section id="view-dashboard" class="view active">
-      <div class="view-head">
-        <h2>今日品管儀表板</h2>
-        <div class="date-picker">
-          <label>日期</label>
-          <input type="date" id="dash-date" />
-          <button id="dash-refresh" class="btn-sm">重新整理</button>
-        </div>
-      </div>
-
-      <div class="cards">
-        <div class="card">
-          <div class="card-label">今日品管次數</div>
-          <div class="card-value" id="stat-total">–</div>
-        </div>
-        <div class="card ok">
-          <div class="card-label">通過 (Pass)</div>
-          <div class="card-value" id="stat-pass">–</div>
-        </div>
-        <div class="card warn">
-          <div class="card-label">警告 (Warning)</div>
-          <div class="card-value" id="stat-warn">–</div>
-        </div>
-        <div class="card danger">
-          <div class="card-label">不符合 / 失敗 (Fail)</div>
-          <div class="card-value" id="stat-fail">–</div>
-        </div>
-        <div class="card danger">
-          <div class="card-label">違反 Westgard 規則</div>
-          <div class="card-value" id="stat-westgard">–</div>
-        </div>
-        <div class="card">
-          <div class="card-label">通過率</div>
-          <div class="card-value" id="stat-rate">–</div>
-        </div>
-      </div>
-
-      <div class="panels">
-        <div class="panel">
-          <h3>違反 Westgard 規則明細</h3>
-          <div id="violation-list" class="violation-list"></div>
-        </div>
-        <div class="panel">
-          <h3>規則違規次數</h3>
-          <div id="rule-bars" class="rule-bars"></div>
-          <h3 style="margin-top:18px">各儀器品管狀況</h3>
-          <div id="instrument-list" class="instrument-list"></div>
-        </div>
-      </div>
-    </section>
-
-    <!-- ============ Records ============ -->
-    <section id="view-records" class="view">
-      <div class="view-head">
-        <h2>品管紀錄</h2>
-      </div>
-      <div class="filter-bar">
-        <div class="filter-item">
-          <label>起始日期</label>
-          <input type="date" id="rec-from" />
-        </div>
-        <div class="filter-item">
-          <label>結束日期</label>
-          <input type="date" id="rec-to" />
-        </div>
-        <div class="filter-item">
-          <label>組別</label>
-          <select id="rec-group">
-            <option value="">全部組別</option>
-          </select>
-        </div>
-        <div class="filter-item">
-          <label>儀器 (S/N)</label>
-          <select id="rec-instrument">
-            <option value="">全部儀器</option>
-          </select>
-        </div>
-        <button id="rec-refresh" class="btn-sm">查詢</button>
-        <button id="rec-reset" class="btn-sm ghost">重設</button>
-      </div>
-      <div class="table-wrap">
-        <table id="records-table">
-          <thead>
-            <tr>
-              <th>日期</th><th>時間</th><th>儀器</th><th>項目</th>
-              <th>濃度</th><th>結果</th><th>單位</th><th>均值</th><th>SD</th>
-              <th>Z-score</th><th>狀態</th><th>Westgard</th>
-            </tr>
-          </thead>
-          <tbody></tbody>
-        </table>
-      </div>
-    </section>
-
-    <!-- ============ L-J Chart ============ -->
-    <section id="view-lj" class="view">
-      <div class="view-head">
-        <h2>Levey-Jennings Chart</h2>
-      </div>
-      <div class="filter-bar">
-        <div class="filter-item">
-          <label>起始日期</label>
-          <input type="date" id="lj-from" />
-        </div>
-        <div class="filter-item">
-          <label>結束日期</label>
-          <input type="date" id="lj-to" />
-        </div>
-        <div class="filter-item">
-          <label>組別</label>
-          <select id="lj-group"></select>
-        </div>
-        <div class="filter-item">
-          <label>儀器 (S/N)</label>
-          <select id="lj-instrument"></select>
-        </div>
-        <div class="filter-item">
-          <label>檢驗項目</label>
-          <select id="lj-test"></select>
-        </div>
-        <button id="lj-refresh" class="btn-sm">繪圖</button>
-      </div>
-      <div class="lj-legend">
-        <span><i class="dot ok"></i>Pass</span>
-        <span><i class="dot warn"></i>Warning (±2SD)</span>
-        <span><i class="dot danger"></i>Fail (±3SD)</span>
-        <span class="ln mean">— Mean</span>
-        <span class="ln s1">— ±1SD</span>
-        <span class="ln s2">— ±2SD</span>
-        <span class="ln s3">— ±3SD</span>
-      </div>
-      <div id="lj-charts"></div>
-    </section>
-
-    <!-- ============ 主檔關聯圖 (互動式 ER) ============ -->
-    <section id="view-er" class="view">
-      <div class="view-head">
-        <h2>主檔關聯圖</h2>
-      </div>
-      <div class="filter-bar">
-        <div class="filter-item">
-          <label>組別</label>
-          <select id="er-group"></select>
-        </div>
-        <div class="filter-item">
-          <label>儀器 (S/N)</label>
-          <select id="er-instrument"></select>
-        </div>
-        <button id="er-refresh" class="btn-sm">重新載入</button>
-        <button id="er-reset" class="btn-sm ghost">清除選取</button>
-      </div>
-
-      <div class="er-legend">
-        <span><i class="er-dot t-inst"></i>儀器</span>
-        <span><i class="er-dot t-qc"></i>品管液</span>
-        <span><i class="er-dot t-reagent"></i>試劑</span>
-        <span><i class="er-dot t-item"></i>檢驗項目</span>
-        <span class="er-legend-tip">點擊任一卡片可高亮其關聯路徑，再點一次或按「清除選取」還原</span>
-      </div>
-
-      <div class="er-stats" id="er-stats"></div>
-
-      <div class="er-layout" id="er-layout">
-        <div class="er-wrap">
-          <div class="er-canvas" id="er-canvas">
-            <svg class="er-edges" id="er-edges"></svg>
-            <div class="er-columns" id="er-columns"></div>
+      <!-- ============ 儀表板 ============ -->
+      <section id="view-dashboard" class="view active">
+        <div class="view-head">
+          <h2>品管儀表板</h2>
+          <div class="date-picker">
+            <label>日期</label>
+            <input type="date" id="dash-date" />
+            <button id="dash-refresh" class="btn-sm">重新整理</button>
           </div>
         </div>
-        <aside class="er-detail-panel" id="er-detail-panel">
-          <div class="er-detail-head">
-            <h3>詳細資料</h3>
-            <button type="button" class="icon-btn er-collapse" id="er-detail-toggle" title="收合面板">›</button>
+        <div class="cards">
+          <div class="card"><div class="card-label">品管筆數</div><div class="card-value" id="stat-total">–</div></div>
+          <div class="card ok"><div class="card-label">通過 (PASS)</div><div class="card-value" id="stat-pass">–</div></div>
+          <div class="card warn"><div class="card-label">警告 (WARNING)</div><div class="card-value" id="stat-warn">–</div></div>
+          <div class="card danger"><div class="card-label">失敗 (FAIL)</div><div class="card-value" id="stat-fail">–</div></div>
+          <div class="card danger"><div class="card-label">違反 Westgard</div><div class="card-value" id="stat-westgard">–</div></div>
+          <div class="card"><div class="card-label">通過率</div><div class="card-value" id="stat-rate">–</div></div>
+        </div>
+        <div class="panels">
+          <div class="panel">
+            <h3>違反 Westgard 規則明細</h3>
+            <div id="violation-list" class="violation-list"></div>
           </div>
-          <div class="er-detail" id="er-detail"></div>
-        </aside>
-        <button type="button" class="er-detail-open" id="er-detail-open" title="展開詳細資料">‹</button>
-      </div>
-    </section>
+          <div class="panel">
+            <h3>規則違規次數</h3>
+            <div id="rule-bars" class="rule-bars"></div>
+            <h3 style="margin-top:18px">各儀器品管狀況</h3>
+            <div id="instrument-stats" class="instrument-list"></div>
+          </div>
+        </div>
+      </section>
 
-    <!-- ============ 管理檢驗項目 ============ -->
-    <section id="view-mg-item" class="view">
-      <div class="view-head"><h2>管理檢驗項目</h2></div>
-      <div class="filter-bar">
-        <div class="filter-item">
-          <label>組別</label>
-          <select id="mg-item-group"></select>
-        </div>
-        <div class="filter-item">
-          <label>儀器 (S/N)</label>
-          <select id="mg-item-instrument"></select>
-        </div>
-        <button id="mg-item-refresh" class="btn-sm">查詢</button>
-        <span id="mg-item-msg" class="add-msg"></span>
-      </div>
-      <div class="table-wrap">
-        <table id="mg-item-table">
-          <thead>
-            <tr><th>項目代碼</th><th>項目全名</th><th>單位</th><th>排序</th><th>狀態</th><th>操作</th></tr>
-          </thead>
-          <tbody></tbody>
-        </table>
-      </div>
-    </section>
-
-    <!-- ============ 管理試劑 ============ -->
-    <section id="view-mg-reagent" class="view">
-      <div class="view-head"><h2>管理試劑</h2></div>
-      <div class="filter-bar">
-        <div class="filter-item">
-          <label>組別</label>
-          <select id="mg-reagent-group"></select>
-        </div>
-        <div class="filter-item">
-          <label>儀器 (S/N)</label>
-          <select id="mg-reagent-instrument"></select>
-        </div>
-        <button id="mg-reagent-refresh" class="btn-sm">查詢</button>
-        <span id="mg-reagent-msg" class="add-msg"></span>
-      </div>
-      <div class="table-wrap">
-        <table id="mg-reagent-table">
-          <thead>
-            <tr><th>試劑名稱</th><th>批號</th><th>對應項目</th><th>檢體</th><th>入庫</th><th>平測</th><th>效期</th><th>狀態</th><th>操作</th></tr>
-          </thead>
-          <tbody></tbody>
-        </table>
-      </div>
-    </section>
-
-    <!-- ============ 管理品管液 ============ -->
-    <section id="view-mg-rqc" class="view">
-      <div class="view-head"><h2>管理品管液</h2></div>
-      <div class="filter-bar">
-        <div class="filter-item">
-          <label>組別</label>
-          <select id="mg-rqc-group"></select>
-        </div>
-        <div class="filter-item">
-          <label>儀器 (S/N)</label>
-          <select id="mg-rqc-instrument"></select>
-        </div>
-        <button id="mg-rqc-refresh" class="btn-sm">查詢</button>
-        <span id="mg-rqc-msg" class="add-msg"></span>
-      </div>
-      <div class="table-wrap">
-        <table id="mg-rqc-table">
-          <thead>
-            <tr><th>檢驗項目</th><th>濃度</th><th>批號</th><th>檢體</th><th>Mean / SD</th><th>平測</th><th>使用中</th><th>狀態</th><th>操作</th></tr>
-          </thead>
-          <tbody></tbody>
-        </table>
-      </div>
-    </section>
-
-    <!-- ============ 編輯對話框（三個管理頁共用）============ -->
-    <div class="modal-backdrop" id="edit-modal">
-      <div class="modal">
-        <div class="modal-head">
-          <h3 id="edit-modal-title">編輯</h3>
-          <button type="button" class="icon-btn" id="edit-modal-close">✕</button>
-        </div>
-        <form id="edit-form" class="form-grid modal-body"></form>
-        <div class="modal-foot">
-          <span id="edit-modal-msg" class="add-msg"></span>
-          <button type="button" class="btn-sm ghost" id="edit-modal-cancel">取消</button>
-          <button type="button" class="btn-sm" id="edit-modal-save">儲存變更</button>
-        </div>
-      </div>
-    </div>
-
-    <!-- ============ AI 判讀 ============ -->
-    <section id="view-ai" class="view">
-      <div class="view-head">
-        <h2>AI 品管判讀</h2>
-      </div>
-      <div class="filter-bar">
-        <div class="filter-item">
-          <label>組別</label>
-          <select id="ai-group"></select>
-        </div>
-        <div class="filter-item">
-          <label>儀器 (S/N)</label>
-          <select id="ai-instrument"></select>
-        </div>
-        <div class="filter-item">
-          <label>起始日期</label>
-          <input type="date" id="ai-from" />
-        </div>
-        <div class="filter-item">
-          <label>結束日期</label>
-          <input type="date" id="ai-to" />
-        </div>
-        <div class="filter-item">
-          <label>檢驗項目</label>
-          <select id="ai-test"></select>
-        </div>
-      </div>
-      <div class="ai-actions">
-        <button id="ai-run" class="btn">AI 判讀</button>
-      </div>
-      <div id="ai-result" class="ai-result"></div>
-    </section>
-
-    <!-- ============ 新增品管紀錄 ============ -->
-    <section id="view-add" class="view">
-      <div class="view-head"><h2>新增品管結果</h2></div>
-      <form id="add-form" class="form-grid">
-        <input type="hidden" name="instrument_name" id="add-instrument-name" />
-        <label>組別*<select id="add-group" required></select></label>
-        <label>儀器 (S/N)*<select id="add-instrument" name="instrument_serial_number" required></select></label>
-        <label>操作者<input name="operator" value="MT001" /></label>
-        <label>品管日期*<input type="date" name="qc_date" required /></label>
-        <label>品管時間*<input type="time" step="1" name="qc_time" required /></label>
-        <label>檢驗項目*<input name="test_item" required value="WBC" /></label>
-        <label>項目全名<input name="test_item_full_name" value="White Blood Cell Count" /></label>
-        <label>品管濃度<input name="qc_level" value="Level 1" /></label>
-        <label>品管批號<input name="qc_lot_number" value="QC-WBC-L1-202606" /></label>
-        <label>結果值*<input type="number" step="any" name="qc_result_value" required /></label>
-        <label>單位<input name="unit" value="10^3/uL" /></label>
-        <label>批號均值 (Mean)*<input type="number" step="any" name="lot_mean" required value="5.00" /></label>
-        <label>批號標準差 (SD)*<input type="number" step="any" name="lot_standard_deviation" required value="0.25" /></label>
-        <label>可接受下限<input type="number" step="any" name="acceptable_range_lower" value="4.50" /></label>
-        <label>可接受上限<input type="number" step="any" name="acceptable_range_upper" value="5.50" /></label>
-        <label class="full">備註<input name="remark" placeholder="留空則自動填入" /></label>
-        <div class="form-actions full">
-          <button type="submit" class="btn">送出（自動計算 Z-score 與 Westgard）</button>
-          <span id="add-msg" class="add-msg"></span>
-        </div>
-      </form>
-      <div class="panel json-import">
-        <h3>以 JSON 匯入品管紀錄</h3>
-        <p class="json-hint">支援單筆物件或多筆陣列 <code>[{...}, {...}]</code>，格式見輸入框提示。</p>
-        <textarea id="json-record" rows="9" spellcheck="false"></textarea>
-        <div class="json-actions">
-          <span id="json-record-msg" class="add-msg"></span>
-          <button type="button" class="btn-sm ghost" id="json-record-copy">複製 JSON 模板</button>
-          <button type="button" class="btn-sm" id="json-record-submit">提交</button>
-        </div>
-      </div>
-    </section>
-
-    <!-- ============ 新增儀器 ============ -->
-    <section id="view-add-instrument" class="view">
-      <div class="view-head"><h2>新增儀器</h2></div>
-      <form id="add-instrument-form" class="form-grid">
-        <label>儀器序號 (S/N)*<input name="serial_number" required placeholder="如 43056" /></label>
-        <label>儀器名稱*<input name="instrument_name" required placeholder="如 Sysmex XN-3000-A" /></label>
-        <label>組別*<select name="group_name" id="reg-inst-group" required></select></label>
-        <label>主 / 備機*
-          <select name="machine_role" required>
-            <option value="主機">主機</option>
-            <option value="備機">備機</option>
-          </select>
-        </label>
-        <div class="form-actions full">
-          <button type="submit" class="btn">新增儀器</button>
-          <span id="add-instrument-msg" class="add-msg"></span>
-        </div>
-      </form>
-      <div class="panel json-import">
-        <h3>以 JSON 匯入儀器</h3>
-        <p class="json-hint">支援單筆物件或多筆陣列 <code>[{...}, {...}]</code>，格式見輸入框提示。</p>
-        <textarea id="json-inst" rows="8" spellcheck="false"></textarea>
-        <div class="json-actions">
-          <span id="json-inst-msg" class="add-msg"></span>
-          <button type="button" class="btn-sm ghost" id="json-inst-copy">複製 JSON 模板</button>
-          <button type="button" class="btn-sm" id="json-inst-submit">提交</button>
-        </div>
-      </div>
-    </section>
-
-    <!-- ============ 新增檢驗項目 ============ -->
-    <section id="view-add-item" class="view">
-      <div class="view-head"><h2>新增檢驗項目</h2></div>
-      <form id="add-item-form" class="form-grid">
-        <label>組別*<select id="reg-item-group" required></select></label>
-        <label>儀器 (S/N)*<select name="instrument_serial_number" id="reg-item-instrument" required></select></label>
-        <label>項目代碼*<input name="item_code" required placeholder="如 RBC / HGB / NEUT%" /></label>
-        <label>項目全名<input name="item_name" placeholder="如 Red Blood Cell Count" /></label>
-        <label>單位<input name="unit" placeholder="如 10^3/uL" /></label>
-        <label>排序<input type="number" name="sort_order" value="0" /></label>
-        <fieldset class="full check-group">
-          <legend>由哪些試劑產生此項目（可複選，建立 <code>reagent_item_map</code> 關聯）</legend>
-          <div id="reg-item-reagents" class="check-row"></div>
-        </fieldset>
-        <div class="form-actions full">
-          <button type="submit" class="btn">新增項目</button>
-          <span id="add-item-msg" class="add-msg"></span>
-        </div>
-      </form>
-      <div class="panel json-import">
-        <h3>以 JSON 匯入檢驗項目</h3>
-        <p class="json-hint">支援單筆物件或多筆陣列 <code>[{...}, {...}]</code>，格式見輸入框提示。</p>
-        <textarea id="json-item" rows="8" spellcheck="false"></textarea>
-        <div class="json-actions">
-          <span id="json-item-msg" class="add-msg"></span>
-          <button type="button" class="btn-sm ghost" id="json-item-copy">複製 JSON 模板</button>
-          <button type="button" class="btn-sm" id="json-item-submit">提交</button>
-        </div>
-      </div>
-    </section>
-
-    <!-- ============ 新增試劑 ============ -->
-    <section id="view-add-reagent" class="view">
-      <div class="view-head"><h2>新增試劑</h2></div>
-      <form id="add-reagent-form" class="form-grid">
-        <label>組別*<select id="reg-reagent-group" required></select></label>
-        <label>儀器 (S/N)*<select name="instrument_serial_number" id="reg-reagent-instrument" required></select></label>
-        <label>對應檢驗項目*<select name="test_item" id="reg-reagent-item" required></select></label>
-        <label>試劑名稱*<input name="reagent_name" required placeholder="如 Fluorocell WNR" /></label>
-        <label>試劑批號*<input name="lot_number" required /></label>
-        <label>廠商<input name="manufacturer" /></label>
-        <label>效期<input type="date" name="expiry_date" /></label>
-        <label class="check-label"><input type="checkbox" name="in_stock" />已入庫</label>
-        <label>入庫日期<input type="date" name="in_stock_date" /></label>
-        <label class="check-label"><input type="checkbox" name="parallel_test_done" />已完成試劑平測</label>
-        <label>平測完成日期<input type="date" name="parallel_test_date" /></label>
-        <label class="check-label"><input type="checkbox" name="same_lot_as_previous" />與上一批同批號</label>
-        <label>上一個批號<input name="previous_lot_number" /></label>
-        <fieldset class="full check-group">
-          <legend>可操作的檢體類別（可複選）</legend>
-          <div id="reg-reagent-specimens" class="check-row"></div>
-        </fieldset>
-        <fieldset class="full check-group">
-          <legend>此試劑負責檢驗的項目（可複選，建立 <code>reagent_item_map</code> 關聯）</legend>
-          <div id="reg-reagent-items" class="check-row"></div>
-        </fieldset>
-        <fieldset class="full check-group">
-          <legend>管理此試劑的品管液（可複選，建立 <code>qc_reagent_map</code> 關聯）</legend>
-          <div id="reg-reagent-qcs" class="check-row"></div>
-        </fieldset>
-        <label class="full">備註<input name="remark" /></label>
-        <div class="form-actions full">
-          <button type="submit" class="btn">新增試劑</button>
-          <span id="add-reagent-msg" class="add-msg"></span>
-        </div>
-      </form>
-      <div class="panel json-import">
-        <h3>以 JSON 匯入試劑</h3>
-        <p class="json-hint">支援單筆物件或多筆陣列 <code>[{...}, {...}]</code>，格式見輸入框提示。</p>
-        <textarea id="json-reagent" rows="10" spellcheck="false"></textarea>
-        <div class="json-actions">
-          <span id="json-reagent-msg" class="add-msg"></span>
-          <button type="button" class="btn-sm ghost" id="json-reagent-copy">複製 JSON 模板</button>
-          <button type="button" class="btn-sm" id="json-reagent-submit">提交</button>
-        </div>
-      </div>
-    </section>
-
-    <!-- ============ 新增品管液 ============ -->
-    <section id="view-add-reagent-qc" class="view">
-      <div class="view-head"><h2>新增品管液</h2></div>
-
-      <div class="mode-tabs">
-        <button type="button" class="mode-tab active" data-mode="profile">品管液設定檔</button>
-        <button type="button" class="mode-tab" data-mode="lot">新批號輸入</button>
-      </div>
-      <p class="mode-hint" id="rqc-mode-hint">
-        建立某台儀器上「某檢驗項目 · 某濃度 · 某檢體」的品管液設定檔。設定檔 ID 固定，
-        試劑關聯（<code>qc_reagent_map</code>）掛在此設定檔上；日後<strong>換批號請用「新批號輸入」</strong>，
-        才不會產生重複設定檔導致試劑抓錯。
-      </p>
-
-      <!-- 模式二：新批號輸入 -->
-      <div id="rqc-mode-lot" class="mode-pane">
+      <!-- ============ 登錄品管結果 ============ -->
+      <section id="view-qc-run" class="view">
+        <div class="view-head"><h2>登錄品管結果</h2></div>
+        <p class="mode-hint">
+          一瓶品管液跑一次可產生多個項目結果。選定儀器與品管液批號後，系統會列出
+          <strong>已設定目標值</strong>的檢驗項目；填入量測值送出，即自動計算 z-score 與 Westgard 判讀。
+        </p>
         <div class="filter-bar">
-          <div class="filter-item">
-            <label>組別</label>
-            <select id="lot-group"></select>
-          </div>
-          <div class="filter-item">
-            <label>儀器 (S/N)</label>
-            <select id="lot-instrument"></select>
-          </div>
-          <div class="filter-item">
-            <label>檢體類別</label>
-            <select id="lot-specimen"></select>
-          </div>
-          <div class="filter-item">
-            <label>檢驗項目</label>
-            <select id="lot-test-item"></select>
-          </div>
+          <div class="filter-item"><label>組別</label><select id="run-section"></select></div>
+          <div class="filter-item"><label>儀器</label><select id="run-instrument"></select></div>
+          <div class="filter-item"><label>品管液批號</label><select id="run-lot"></select></div>
+          <div class="filter-item"><label>執行時間</label><input type="datetime-local" id="run-at" /></div>
+          <div class="filter-item"><label>操作者</label><input id="run-operator" placeholder="MT001" /></div>
         </div>
-        <div id="lot-levels"></div>
+        <div id="run-targets"></div>
         <div class="form-actions" style="margin-top:14px">
-          <button type="button" class="btn" id="lot-submit">登錄新批號</button>
-          <span id="lot-msg" class="add-msg"></span>
+          <button class="btn" id="run-submit">送出品管結果</button>
+          <span id="run-msg" class="add-msg"></span>
         </div>
-      </div>
+        <div id="run-result"></div>
+      </section>
 
-      <form id="add-reagent-qc-form" class="form-grid mode-pane active">
-        <label>組別*<select id="reg-rqc-group" required></select></label>
-        <label>儀器 (S/N)*<select name="instrument_serial_number" id="reg-rqc-instrument" required></select></label>
-        <label>檢體類別*<select name="specimen_type_code" id="reg-rqc-specimen" required></select></label>
-        <label>檢驗項目*<select name="test_item" id="reg-rqc-item" required></select></label>
-        <label>項目全名<input name="test_item_full_name" id="reg-rqc-item-full" placeholder="（依檢驗項目自動帶入）" /></label>
-        <label>濃度 (Level)*<input name="qc_level" required placeholder="如 Level 1" /></label>
-        <label>單位<input name="unit" /></label>
-        <label class="check-label"><input type="checkbox" name="in_use" checked />目前使用中</label>
-        <fieldset class="full check-group">
-          <legend>此品管液所管理的試劑（可複選，建立 <code>qc_reagent_map</code> 關聯）</legend>
-          <div id="reg-rqc-reagents" class="check-row"></div>
-        </fieldset>
-        <label class="full">備註<input name="remark" /></label>
-        <p class="field-note full">
-          批號、效期、原廠 Mean/SD、平測等隨批號變動的資料，請於「新批號輸入」分頁登錄。
-        </p>
-        <div class="form-actions full">
-          <button type="submit" class="btn">建立設定檔</button>
-          <span id="add-reagent-qc-msg" class="add-msg"></span>
+      <!-- ============ 品管紀錄查詢 ============ -->
+      <section id="view-qc-results" class="view">
+        <div class="view-head"><h2>品管紀錄查詢</h2></div>
+        <div class="filter-bar">
+          <div class="filter-item"><label>起始日期</label><input type="date" id="res-from" /></div>
+          <div class="filter-item"><label>結束日期</label><input type="date" id="res-to" /></div>
+          <div class="filter-item"><label>組別</label><select id="res-section"></select></div>
+          <div class="filter-item"><label>儀器</label><select id="res-instrument"></select></div>
+          <div class="filter-item"><label>項目</label><input id="res-item" placeholder="如 GLU" /></div>
+          <div class="filter-item"><label>狀態</label>
+            <select id="res-status">
+              <option value="">全部</option><option value="PASS">PASS</option>
+              <option value="WARNING">WARNING</option><option value="FAIL">FAIL</option>
+            </select>
+          </div>
+          <button id="res-refresh" class="btn-sm">查詢</button>
         </div>
-      </form>
-      <div class="panel json-import mode-pane active" id="rqc-json-panel">
-        <h3>以 JSON 匯入品管液設定檔</h3>
-        <p class="json-hint">
-          支援單筆物件或多筆陣列 <code>[{...}, {...}]</code>，格式見輸入框提示。
-          設定檔<strong>不含批號欄位</strong>——批號、效期、Mean/SD 請於「新批號輸入」分頁登錄。
-        </p>
-        <textarea id="json-rqc" rows="10" spellcheck="false"></textarea>
-        <div class="json-actions">
-          <span id="json-rqc-msg" class="add-msg"></span>
-          <button type="button" class="btn-sm ghost" id="json-rqc-copy">複製 JSON 模板</button>
-          <button type="button" class="btn-sm" id="json-rqc-submit">提交</button>
-        </div>
-      </div>
-    </section>
+        <div class="table-wrap"><table id="res-table"><thead></thead><tbody></tbody></table></div>
+      </section>
 
-    <!-- ============ 新增檢體類別 ============ -->
-    <section id="view-add-specimen" class="view">
-      <div class="view-head"><h2>新增檢體類別</h2></div>
-      <form id="add-specimen-form" class="form-grid">
-        <label>檢體代碼*<input name="code" required placeholder="如 B / U / CSF" /></label>
-        <label>檢體名稱*<input name="name" required placeholder="如 BLOOD / URINE" /></label>
-        <label class="full">說明<input name="description" placeholder="如 全血 / 血清 / 血漿" /></label>
-        <div class="form-actions full">
-          <button type="submit" class="btn">新增檢體類別</button>
-          <span id="add-specimen-msg" class="add-msg"></span>
+      <!-- ============ L-J Chart ============ -->
+      <section id="view-lj" class="view">
+        <div class="view-head"><h2>Levey-Jennings Chart</h2></div>
+        <div class="filter-bar">
+          <div class="filter-item"><label>組別</label><select id="lj-section"></select></div>
+          <div class="filter-item"><label>儀器</label><select id="lj-instrument"></select></div>
+          <div class="filter-item"><label>檢驗項目</label><select id="lj-item"></select></div>
+          <div class="filter-item"><label>起始日期</label><input type="date" id="lj-from" /></div>
+          <div class="filter-item"><label>結束日期</label><input type="date" id="lj-to" /></div>
+          <button id="lj-refresh" class="btn-sm">繪圖</button>
         </div>
-      </form>
-      <div class="panel" style="margin-top:18px">
-        <h3>現有檢體類別</h3>
-        <div class="table-wrap">
-          <table id="specimen-table">
-            <thead><tr><th>代碼</th><th>名稱</th><th>說明</th></tr></thead>
-            <tbody></tbody>
-          </table>
+        <div class="lj-legend">
+          <span><i class="dot ok"></i>PASS</span><span><i class="dot warn"></i>WARNING</span>
+          <span><i class="dot danger"></i>FAIL</span>
+          <span class="ln mean">— Mean</span><span class="ln s1">— ±1SD</span>
+          <span class="ln s2">— ±2SD</span><span class="ln s3">— ±3SD</span>
         </div>
-      </div>
-    </section>
+        <div id="lj-charts"></div>
+      </section>
+
+      <!-- ============ 校正紀錄 ============ -->
+      <section id="view-calibration" class="view">
+        <div class="view-head">
+          <h2>校正紀錄</h2>
+          <button class="btn-sm" id="cal-new">登錄校正事件</button>
+        </div>
+        <div class="filter-bar">
+          <div class="filter-item"><label>組別</label><select id="cal-section"></select></div>
+          <div class="filter-item"><label>儀器</label><select id="cal-instrument"></select></div>
+          <div class="filter-item"><label>起始日期</label><input type="date" id="cal-from" /></div>
+          <div class="filter-item"><label>結束日期</label><input type="date" id="cal-to" /></div>
+          <button id="cal-refresh" class="btn-sm">查詢</button>
+        </div>
+        <div id="cal-list"></div>
+      </section>
+
+      <!-- ============ 檢驗設定 (assay) ============ -->
+      <section id="view-assays" class="view">
+        <div class="view-head">
+          <h2>檢驗設定 (assay)</h2>
+          <div class="head-actions">
+            <button class="btn-sm" id="assay-new">新增設定</button>
+            <button class="btn-sm" id="assay-batch">批次新增</button>
+            <button class="btn-sm ghost" id="assay-copy">複製到備機</button>
+          </div>
+        </div>
+        <p class="mode-hint">
+          <strong>assay = 儀器 × 檢驗項目 × 檢體別</strong>。同一項目在不同檢體（如 CRE/BLOOD 與 CRE/URINE）
+          或不同儀器上，都是各自獨立的一筆設定；試劑、品管液、校正液的關聯掛在這裡。
+        </p>
+        <div class="filter-bar">
+          <div class="filter-item"><label>組別</label><select id="assay-section"></select></div>
+          <div class="filter-item"><label>儀器</label><select id="assay-instrument"></select></div>
+          <div class="filter-item"><label>檢體</label><select id="assay-specimen"><option value="">全部</option></select></div>
+          <div class="filter-item"><label>項目關鍵字</label><input id="assay-q" placeholder="代碼或名稱" /></div>
+          <label class="check-label"><input type="checkbox" id="assay-inactive" />含已停用</label>
+          <button id="assay-refresh" class="btn-sm">查詢</button>
+          <span id="assay-msg" class="add-msg"></span>
+        </div>
+        <div class="table-wrap"><table id="assay-table"><thead></thead><tbody></tbody></table></div>
+      </section>
+
+      <!-- ============ 品管目標值與平測 ============ -->
+      <section id="view-qc-targets" class="view">
+        <div class="view-head">
+          <h2>品管目標值與平測</h2>
+          <button class="btn-sm" id="target-new">建立目標值</button>
+        </div>
+        <p class="mode-hint">
+          目標值屬於 <strong>assay × 品管液批號</strong>，且版本化：平測前用原廠值（MANUFACTURER），
+          平測完成後建立實驗室值（LAB），舊版自動收效但保留，歷史判讀因此永遠可重現。
+        </p>
+        <div class="filter-bar">
+          <div class="filter-item"><label>組別</label><select id="target-section"></select></div>
+          <div class="filter-item"><label>儀器</label><select id="target-instrument"></select></div>
+          <label class="check-label"><input type="checkbox" id="target-history" />含歷史版本</label>
+          <button id="target-refresh" class="btn-sm">查詢</button>
+          <span id="target-msg" class="add-msg"></span>
+        </div>
+        <div class="panel" style="margin-bottom:16px">
+          <h3>⚠️ 待平測（仍使用原廠值）</h3>
+          <div class="table-wrap"><table id="pending-table"><thead></thead><tbody></tbody></table></div>
+        </div>
+        <div class="panel">
+          <h3>目標值清單</h3>
+          <div class="table-wrap"><table id="target-table"><thead></thead><tbody></tbody></table></div>
+        </div>
+      </section>
+
+      <!-- ============ 主檔關聯圖 ============ -->
+      <section id="view-er" class="view">
+        <div class="view-head"><h2>主檔關聯圖</h2></div>
+        <div class="filter-bar">
+          <div class="filter-item"><label>組別</label><select id="er-section"></select></div>
+          <div class="filter-item"><label>儀器</label><select id="er-instrument"></select></div>
+          <button id="er-refresh" class="btn-sm">重新載入</button>
+          <button id="er-reset" class="btn-sm ghost">清除選取</button>
+        </div>
+        <div class="er-legend">
+          <span><i class="er-dot t-inst"></i>儀器</span>
+          <span><i class="er-dot t-qc"></i>品管液</span>
+          <span><i class="er-dot t-reagent"></i>試劑</span>
+          <span><i class="er-dot t-item"></i>檢驗設定</span>
+          <span class="er-legend-tip">點擊卡片可高亮關聯路徑</span>
+        </div>
+        <div class="er-stats" id="er-stats"></div>
+        <div class="er-layout" id="er-layout">
+          <div class="er-wrap">
+            <div class="er-canvas" id="er-canvas">
+              <svg class="er-edges" id="er-edges"></svg>
+              <div class="er-columns" id="er-columns"></div>
+            </div>
+          </div>
+          <aside class="er-detail-panel" id="er-detail-panel">
+            <div class="er-detail-head">
+              <h3>詳細資料</h3>
+              <button type="button" class="icon-btn er-collapse" id="er-detail-toggle" title="收合">›</button>
+            </div>
+            <div class="er-detail" id="er-detail"></div>
+          </aside>
+          <button type="button" class="er-detail-open" id="er-detail-open" title="展開">‹</button>
+        </div>
+      </section>
+
+      <!-- ============ 產品與批號 ============ -->
+      <section id="view-products" class="view">
+        <div class="view-head">
+          <h2>產品與批號</h2>
+          <div class="head-actions">
+            <button class="btn-sm" id="prod-new">新增產品</button>
+            <button class="btn-sm" id="lot-new">新增批號</button>
+          </div>
+        </div>
+        <p class="mode-hint">
+          <strong>產品是穩定定義，批號是實體</strong>。換批號只需新增 lot，
+          assay 的關聯掛在產品上，因此換批永遠不會讓試劑或品管液關聯指錯。
+        </p>
+        <div class="mode-tabs">
+          <button type="button" class="mode-tab active" data-ptype="reagent">試劑</button>
+          <button type="button" class="mode-tab" data-ptype="qc">品管液</button>
+          <button type="button" class="mode-tab" data-ptype="calibrator">校正液</button>
+        </div>
+        <div class="filter-bar">
+          <label class="check-label"><input type="checkbox" id="prod-inactive" />含已停用</label>
+          <button id="prod-refresh" class="btn-sm">重新整理</button>
+          <span id="prod-msg" class="add-msg"></span>
+        </div>
+        <div id="prod-list"></div>
+      </section>
+
+      <!-- ============ 試劑上機 ============ -->
+      <section id="view-reagent-loads" class="view">
+        <div class="view-head">
+          <h2>試劑上機</h2>
+          <button class="btn-sm" id="load-new">試劑上機</button>
+        </div>
+        <div class="filter-bar">
+          <div class="filter-item"><label>組別</label><select id="load-section"></select></div>
+          <div class="filter-item"><label>儀器</label><select id="load-instrument"></select></div>
+          <label class="check-label"><input type="checkbox" id="load-current" checked />只看在線上</label>
+          <button id="load-refresh" class="btn-sm">查詢</button>
+          <span id="load-msg" class="add-msg"></span>
+        </div>
+        <div class="table-wrap"><table id="load-table"><thead></thead><tbody></tbody></table></div>
+      </section>
+
+      <!-- ============ 基礎主檔（儀器 / 項目 / 檢體 / 組別）============ -->
+      <section id="view-instruments" class="view">
+        <div class="view-head">
+          <h2>儀器</h2>
+          <button class="btn-sm" id="inst-new">新增儀器</button>
+        </div>
+        <div class="filter-bar">
+          <label class="check-label"><input type="checkbox" id="inst-inactive" />含已停用</label>
+          <button id="inst-refresh" class="btn-sm">重新整理</button>
+          <span id="inst-msg" class="add-msg"></span>
+        </div>
+        <div class="table-wrap"><table id="inst-table"><thead></thead><tbody></tbody></table></div>
+      </section>
+
+      <section id="view-test-items" class="view">
+        <div class="view-head">
+          <h2>檢驗項目字典</h2>
+          <button class="btn-sm" id="item-new">新增項目</button>
+        </div>
+        <p class="mode-hint">全院共用字典，<strong>不綁儀器</strong>。同一個 CRE 在多台儀器、多種檢體上共用這一筆。</p>
+        <div class="filter-bar">
+          <div class="filter-item"><label>關鍵字</label><input id="item-q" placeholder="代碼或名稱" /></div>
+          <button id="item-refresh" class="btn-sm">查詢</button>
+          <span id="item-msg" class="add-msg"></span>
+        </div>
+        <div class="table-wrap"><table id="item-table"><thead></thead><tbody></tbody></table></div>
+      </section>
+
+      <section id="view-specimen-types" class="view">
+        <div class="view-head">
+          <h2>檢體類別</h2>
+          <button class="btn-sm" id="spec-new">新增檢體類別</button>
+        </div>
+        <div class="filter-bar"><span id="spec-msg" class="add-msg"></span></div>
+        <div class="table-wrap"><table id="spec-table"><thead></thead><tbody></tbody></table></div>
+      </section>
+
+      <section id="view-sections" class="view">
+        <div class="view-head">
+          <h2>組別</h2>
+          <button class="btn-sm" id="sec-new">新增組別</button>
+        </div>
+        <div class="filter-bar"><span id="sec-msg" class="add-msg"></span></div>
+        <div class="table-wrap"><table id="sec-table"><thead></thead><tbody></tbody></table></div>
+      </section>
+
+      <!-- ============ AI 判讀 ============ -->
+      <section id="view-ai" class="view">
+        <div class="view-head"><h2>AI 品管判讀</h2></div>
+        <div class="filter-bar">
+          <div class="filter-item"><label>組別</label><select id="ai-section"></select></div>
+          <div class="filter-item"><label>儀器</label><select id="ai-instrument"></select></div>
+          <div class="filter-item"><label>項目</label><input id="ai-item" placeholder="留空為全部" /></div>
+          <div class="filter-item"><label>起始日期</label><input type="date" id="ai-from" /></div>
+          <div class="filter-item"><label>結束日期</label><input type="date" id="ai-to" /></div>
+        </div>
+        <div class="ai-actions"><button id="ai-run" class="btn">AI 判讀</button></div>
+        <div id="ai-result" class="ai-result"></div>
+      </section>
     </main>
   </div>
+
+  <!-- ============ 通用對話框 ============ -->
+  <div class="modal-backdrop" id="modal">
+    <div class="modal">
+      <div class="modal-head">
+        <h3 id="modal-title">編輯</h3>
+        <button type="button" class="icon-btn" id="modal-close">✕</button>
+      </div>
+      <p class="modal-hint" id="modal-hint" hidden></p>
+      <form id="modal-form" class="form-grid modal-body"></form>
+      <div class="modal-foot">
+        <span id="modal-msg" class="add-msg"></span>
+        <button type="button" class="btn-sm ghost" id="modal-cancel">取消</button>
+        <button type="button" class="btn-sm" id="modal-save">儲存</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast" hidden></div>
 
   <script src="app.js"></script>
 </body>
