@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="PJQAQC 實驗室品質管制公開展示。以合成資料查看品管趨勢和 Westgard 規則判讀。">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'none'; base-uri 'none'; form-action 'none'">
+  <title>PJQAQC 品管管理系統｜公開展示</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="demo.js" defer></script>
+</head>
+<body>
+  <header>
+    <div class="wrap">
+      <p class="brand">PJQAQC <span>公開展示</span></p>
+      <h1>實驗室品管管理</h1>
+      <p>查看儀器品管趨勢、Z-score 與 Westgard 規則判讀。</p>
+      <p class="notice">本頁使用合成資料，供匿名瀏覽。正式資料與管理功能須在正式站登入。</p>
+    </div>
+  </header>
+  <main class="wrap">
+    <section class="panel" aria-labelledby="trend-title">
+      <div class="section-heading">
+        <h2 id="trend-title">Levey–Jennings 趨勢</h2>
+        <label>示範項目
+          <select id="item">
+            <option value="glucose">GLU · 生化</option>
+            <option value="hemoglobin">HGB · 血液</option>
+          </select>
+        </label>
+      </div>
+      <p id="series-summary" aria-live="polite"></p>
+      <svg id="chart" viewBox="0 0 720 260" role="img" aria-label="示範品管 Z-score 趨勢，詳細數值列於下方表格"></svg>
+    </section>
+    <section class="panel" aria-labelledby="records-title">
+      <h2 id="records-title">示範品管紀錄</h2>
+      <div class="table-scroll" tabindex="0" role="region" aria-label="示範品管紀錄表">
+        <table>
+          <thead><tr><th scope="col">日期</th><th scope="col">測量值</th><th scope="col">Z-score</th><th scope="col">判讀</th><th scope="col">觸發規則</th></tr></thead>
+          <tbody id="records"></tbody>
+        </table>
+      </div>
+      <noscript>請啟用 JavaScript 以查看趨勢與示範紀錄。</noscript>
+    </section>
+  </main>
+</body>
+</html>
