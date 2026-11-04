@@ -1,6 +1,7 @@
 **
 !backend/
 !backend/database.py
+!backend/login.html
 !backend/main.py
 !backend/manage.py
 !backend/production.py

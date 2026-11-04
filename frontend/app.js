@@ -14,6 +14,14 @@ const nowLocal = () => new Date(Date.now() - new Date().getTimezoneOffset() * 60
 
 async function api(path, opts) {
   const res = await fetch(API + path, opts);
+  if (res.headers.get("X-PJQAQC-Auth") === "required") {
+    if (res.status === 401) {
+      window.location.replace("/login");
+      throw new Error("請重新登入");
+    }
+    const logoutForm = document.getElementById("logout-form");
+    if (logoutForm) logoutForm.hidden = false;
+  }
   const text = await res.text();
   let body;
   try { body = text ? JSON.parse(text) : null; } catch { body = text; }

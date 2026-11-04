@@ -25,11 +25,15 @@ jobs:
       - name: Validate Compose
         env:
           PUBLIC_HOSTNAME: qaqc.example.com
-          CF_ACCESS_TEAM: test
-          CF_ACCESS_AUD: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+          SUPABASE_URL: https://aaaaaaaaaaaaaaaaaaaa.supabase.co
+          SUPABASE_PUBLISHABLE_KEY: sb_publishable_test
         run: docker compose config --quiet
       - name: Build and check the FastAPI image
         run: |
           docker build -t pjqaqc:ci .
           docker run --rm pjqaqc:ci /app/backend/.venv/bin/python -c \
             'from main import app; assert "/api/ready" in app.openapi()["paths"]'
+      - name: Verify the production login boundary
+        run: |
+          docker run --rm -i --network none pjqaqc:ci /app/backend/.venv/bin/python - \
+            < backend/test_production.py

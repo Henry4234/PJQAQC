@@ -24,7 +24,6 @@ from pydantic import BaseModel
 
 import database as db
 import manage
-from production import configure_production
 import register
 
 load_dotenv()
@@ -39,6 +38,8 @@ app = FastAPI(
     openapi_url=None if PRODUCTION else "/openapi.json",
 )
 if PRODUCTION:
+    from production import configure_production
+
     configure_production(app)
 else:
     app.add_middleware(
