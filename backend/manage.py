@@ -9,7 +9,6 @@ from __future__ import annotations
 
 from typing import Any
 
-import pymysql
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -53,7 +52,7 @@ def _update(resource: str, pk: str, data: dict[str, Any]) -> dict:
     if data:
         try:
             db.update_by_pk(table, pk_col, pk, data)
-        except pymysql.err.IntegrityError as e:
+        except db.INTEGRITY_ERRORS as e:
             msg = e.args[1] if len(e.args) > 1 else str(e)
             raise HTTPException(status_code=409, detail=f"更新{label}失敗：{msg}")
     return db.get_by_pk(table, pk_col, pk)
@@ -259,7 +258,7 @@ def update_qc_target(pk: str, inp: QCTargetUpdate):
     if data:
         try:
             db.update_by_pk("qc_target_values", "qc_target_id", pk, data)
-        except pymysql.err.IntegrityError as e:
+        except db.INTEGRITY_ERRORS as e:
             raise HTTPException(status_code=409,
                                 detail=f"更新失敗：{e.args[1] if len(e.args) > 1 else e}")
     return db.get_by_pk("qc_target_values", "qc_target_id", pk)
@@ -271,7 +270,7 @@ def delete_qc_target(pk: str):
         raise HTTPException(status_code=404, detail=f"查無品管目標值：{pk}")
     try:
         db.execute("DELETE FROM qc_target_values WHERE qc_target_id = %s", (pk,))
-    except pymysql.err.IntegrityError:
+    except db.INTEGRITY_ERRORS:
         raise HTTPException(
             status_code=409,
             detail="此目標值已被品管結果引用，無法刪除。若要停用請建立新版本（平測 API）。",
@@ -308,7 +307,7 @@ def load_reagent(inp: ReagentLoadIn):
             "loaded_at": inp.loaded_at or datetime.now(),
             "loaded_by": inp.loaded_by, "note": inp.note,
         })
-    except pymysql.err.IntegrityError as e:
+    except db.INTEGRITY_ERRORS as e:
         msg = e.args[1] if len(e.args) > 1 else str(e)
         if "uq_current_instrument_position" in msg:
             raise HTTPException(
@@ -409,7 +408,7 @@ def delete_resource(resource: str, pk: str):
     _get_or_404(resource, pk)
     try:
         db.execute(f"DELETE FROM {table} WHERE {pk_col} = %s", (pk,))
-    except pymysql.err.IntegrityError:
+    except db.INTEGRITY_ERRORS:
         hint = "停用（active=false）" if has_active else "改變批號狀態（如 EXHAUSTED）"
         raise HTTPException(
             status_code=409,

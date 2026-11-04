@@ -14,7 +14,6 @@ from __future__ import annotations
 from datetime import date, datetime
 from typing import Any
 
-import pymysql
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -25,7 +24,7 @@ router = APIRouter(prefix="/api", tags=["register"])
 
 
 # ============================ 共用工具 ============================ #
-def _integrity(e: pymysql.err.IntegrityError, what: str) -> HTTPException:
+def _integrity(e: Exception, what: str) -> HTTPException:
     msg = e.args[1] if len(e.args) > 1 else str(e)
     if "foreign key" in msg.lower():
         return HTTPException(status_code=400, detail=f"{what}失敗（關聯對象不存在）：{msg}")
@@ -35,7 +34,7 @@ def _integrity(e: pymysql.err.IntegrityError, what: str) -> HTTPException:
 def _insert(table: str, data: dict[str, Any], pk_col: str, pk_val: str, what: str) -> dict:
     try:
         db.insert_one(table, data)
-    except pymysql.err.IntegrityError as e:
+    except db.INTEGRITY_ERRORS as e:
         raise _integrity(e, what)
     row = db.get_by_pk(table, pk_col, pk_val)
     if not row:
@@ -193,7 +192,7 @@ def create_assay(inp: AssayIn):
             "method_name": inp.method_name, "result_unit": inp.result_unit,
             "decimal_places": inp.decimal_places,
         })
-    except pymysql.err.IntegrityError as e:
+    except db.INTEGRITY_ERRORS as e:
         msg = e.args[1] if len(e.args) > 1 else str(e)
         if "uq_assay_route" in msg:
             raise HTTPException(
@@ -284,36 +283,36 @@ def copy_to_backup(inp: CopyToBackupIn):
                 cur.execute("SELECT * FROM assay_reagent_requirements WHERE assay_id=%s",
                             (a["assay_id"],))
                 for r in cur.fetchall():
-                    cur.execute(
-                        "INSERT IGNORE INTO assay_reagent_requirements "
-                        "(assay_id, reagent_product_id, reagent_role, required, priority, note) "
-                        "VALUES (%s,%s,%s,%s,%s,%s)",
-                        (new_aid, r["reagent_product_id"], r["reagent_role"],
-                         r["required"], r["priority"], r["note"]),
-                    )
-                    stats["reagents"] += cur.rowcount
+                    stats["reagents"] += db.tx_insert_missing(cur, "assay_reagent_requirements", {
+                        "assay_id": new_aid,
+                        "reagent_product_id": r["reagent_product_id"],
+                        "reagent_role": r["reagent_role"],
+                        "required": r["required"],
+                        "priority": r["priority"],
+                        "note": r["note"],
+                    })
             if inp.include_qc:
                 cur.execute("SELECT * FROM assay_qc_requirements WHERE assay_id=%s",
                             (a["assay_id"],))
                 for r in cur.fetchall():
-                    cur.execute(
-                        "INSERT IGNORE INTO assay_qc_requirements "
-                        "(assay_id, qc_product_id, required, priority, note) VALUES (%s,%s,%s,%s,%s)",
-                        (new_aid, r["qc_product_id"], r["required"], r["priority"], r["note"]),
-                    )
-                    stats["qc"] += cur.rowcount
+                    stats["qc"] += db.tx_insert_missing(cur, "assay_qc_requirements", {
+                        "assay_id": new_aid,
+                        "qc_product_id": r["qc_product_id"],
+                        "required": r["required"],
+                        "priority": r["priority"],
+                        "note": r["note"],
+                    })
             if inp.include_calibrators:
                 cur.execute("SELECT * FROM assay_calibrator_requirements WHERE assay_id=%s",
                             (a["assay_id"],))
                 for r in cur.fetchall():
-                    cur.execute(
-                        "INSERT IGNORE INTO assay_calibrator_requirements "
-                        "(assay_id, calibrator_product_id, required, priority, note) "
-                        "VALUES (%s,%s,%s,%s,%s)",
-                        (new_aid, r["calibrator_product_id"], r["required"],
-                         r["priority"], r["note"]),
-                    )
-                    stats["calibrators"] += cur.rowcount
+                    stats["calibrators"] += db.tx_insert_missing(cur, "assay_calibrator_requirements", {
+                        "assay_id": new_aid,
+                        "calibrator_product_id": r["calibrator_product_id"],
+                        "required": r["required"],
+                        "priority": r["priority"],
+                        "note": r["note"],
+                    })
             if inp.copy_qc_targets:
                 cur.execute(
                     "SELECT * FROM qc_target_values WHERE assay_id=%s AND effective_to IS NULL",
@@ -425,7 +424,7 @@ def set_assay_links(assay_id: str, inp: AssayLinksIn):
                 for pid in inp.calibrator_product_ids:
                     db.tx_insert(cur, "assay_calibrator_requirements",
                                  {"assay_id": assay_id, "calibrator_product_id": pid})
-    except pymysql.err.IntegrityError as e:
+    except db.INTEGRITY_ERRORS as e:
         # 目標值/結果已引用該關聯時，RESTRICT 會擋下刪除
         raise HTTPException(
             status_code=409,
@@ -610,7 +609,7 @@ def parallel_test(inp: ParallelTestIn):
                     "WHERE qc_lot_id=%s AND parallel_test_done=FALSE",
                     (date.today(), inp.qc_lot_id),
                 )
-    except pymysql.err.IntegrityError as e:
+    except db.INTEGRITY_ERRORS as e:
         raise _integrity(e, "登錄平測結果")
 
     return {
@@ -726,7 +725,7 @@ def create_qc_run(inp: QCRunIn):
                         "reagent_lot_id": lot_id,
                         "reagent_product_id": rl["reagent_product_id"],
                     })
-    except pymysql.err.IntegrityError as e:
+    except db.INTEGRITY_ERRORS as e:
         raise _integrity(e, "登錄品管執行")
 
     return {
@@ -804,7 +803,7 @@ def create_calibration_event(inp: CalibrationEventIn):
                         "reagent_lot_id": lot_id,
                         "reagent_product_id": rl["reagent_product_id"],
                     })
-    except pymysql.err.IntegrityError as e:
+    except db.INTEGRITY_ERRORS as e:
         raise _integrity(e, "登錄校正事件")
 
     return {
@@ -833,7 +832,7 @@ def list_calibration_events(
         conds.append("e.performed_at >= %s")
         params.append(f"{date_from} 00:00:00")
     if date_to:
-        conds.append("e.performed_at < DATE_ADD(%s, INTERVAL 1 DAY)")
+        conds.append(f"e.performed_at < {db.NEXT_DAY}")
         params.append(date_to)
     where = ("WHERE " + " AND ".join(conds)) if conds else ""
     params.append(limit)

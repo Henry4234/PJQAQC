@@ -1,0 +1,44 @@
+services:
+  app:
+    build: .
+    restart: unless-stopped
+    init: true
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    tmpfs:
+      - /tmp
+    environment:
+      APP_ENV: production
+      PUBLIC_HOSTNAME: ${PUBLIC_HOSTNAME:?Set PUBLIC_HOSTNAME}
+      CF_ACCESS_TEAM: ${CF_ACCESS_TEAM:?Set CF_ACCESS_TEAM}
+      CF_ACCESS_AUD: ${CF_ACCESS_AUD:?Set CF_ACCESS_AUD}
+      DATABASE_URL_FILE: /run/secrets/database_url
+    secrets:
+      - database_url
+    healthcheck:
+      test: [CMD, python, -c, "import socket; socket.create_connection(('127.0.0.1', 8000), 2).close()"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  tunnel:
+    image: cloudflare/cloudflared:2026.10.7
+    command: [tunnel, --no-autoupdate, run, --token-file, /run/secrets/cloudflared_token]
+    restart: unless-stopped
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    secrets:
+      - cloudflared_token
+
+secrets:
+  database_url:
+    file: ./secrets/database_url
+  cloudflared_token:
+    file: ./secrets/cloudflared_token

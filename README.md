@@ -2,9 +2,12 @@
 
 實驗室品質管制（Laboratory Quality Control）管理系統，含 Westgard 多規則自動判讀。
 
+- [匿名展示](https://henry4234.github.io/PJQAQC/) 使用合成資料，可查看品管趨勢與判讀。
+- [Ubuntu 與 Supabase 上線手冊](DEPLOYMENT.md) 說明正式站部署、搬移與驗收。
+
 - **前端**：原生 HTML / CSS / JavaScript 網頁（儀表板、紀錄查詢、新增品管）
 - **後端**：Python FastAPI（API + 提供前端靜態檔）
-- **資料庫**：MySQL（NAS 區域網路），資料表 `instruments`、`qc_records`
+- **資料庫**：本機可用 MariaDB，正式環境支援 Supabase PostgreSQL v3。
 
 ## 架構
 

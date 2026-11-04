@@ -1,0 +1,35 @@
+name: Check FastAPI deployment
+
+on:
+  pull_request:
+    paths:
+      - 'backend/**'
+      - 'frontend/**'
+      - 'supabase/**'
+      - '.dockerignore'
+      - 'Dockerfile'
+      - 'compose.yaml'
+      - '.github/workflows/backend.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Validate Compose
+        env:
+          PUBLIC_HOSTNAME: qaqc.example.com
+          CF_ACCESS_TEAM: test
+          CF_ACCESS_AUD: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+        run: docker compose config --quiet
+      - name: Build and check the FastAPI image
+        run: |
+          docker build -t pjqaqc:ci .
+          docker run --rm pjqaqc:ci /app/backend/.venv/bin/python -c \
+            'from main import app; assert "/api/ready" in app.openapi()["paths"]'
