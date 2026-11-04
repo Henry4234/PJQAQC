@@ -18,6 +18,7 @@ services:
       DATABASE_URL_FILE: /run/secrets/database_url
     secrets:
       - database_url
+      - supabase_ca
     healthcheck:
       test: [CMD, python, -c, "import socket; socket.create_connection(('127.0.0.1', 8000), 2).close()"]
       interval: 30s
@@ -40,5 +41,7 @@ services:
 secrets:
   database_url:
     file: ./secrets/database_url
+  supabase_ca:
+    file: ./secrets/supabase_ca
   cloudflared_token:
     file: ./secrets/cloudflared_token
