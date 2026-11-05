@@ -1,0 +1,2 @@
+# 只供 Supabase CLI 的 `db push` 讀取遷移檔；資料庫連線由 CI 的 SUPABASE_DB_URL 提供。
+project_id = "tptjijcynzwskfcgkvmx"

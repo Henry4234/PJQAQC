@@ -1,0 +1,33 @@
+name: Apply database migrations
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'supabase/migrations/**'
+      - '.github/workflows/deploy-database.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-database
+  cancel-in-progress: false
+
+jobs:
+  migrate:
+    # 預設關閉。完成 DEPLOYMENT.md 的遷移紀錄修復後，才設定 SUPABASE_MIGRATIONS_ENABLED=true
+    if: vars.SUPABASE_MIGRATIONS_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: List pending migrations
+        run: npx --yes supabase@3.0.0 db push --remote="$SUPABASE_DB_URL" --dry-run
+      - name: Apply pending migrations
+        run: npx --yes supabase@3.0.0 db push --remote="$SUPABASE_DB_URL" --yes

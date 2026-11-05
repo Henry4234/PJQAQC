@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  portal:
+    name: Portal (Worker and DEMO)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Run the Worker and DEMO tests
+        run: node --test tests/worker.test.mjs tests/demo-data.test.mjs
+      - name: Check that the page scripts parse
+        run: |
+          node --check frontend/app.js
+          node --check frontend/demo-data.js
+      - name: Build the Worker without deploying
+        run: npx --yes wrangler@4.119.0 deploy --dry-run --config cloudflare/wrangler.toml
+
+  api:
+    name: API image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Validate Compose
+        env:
+          PUBLIC_HOSTNAME: qaqc.example.com
+          SUPABASE_URL: https://aaaaaaaaaaaaaaaaaaaa.supabase.co
+          SUPABASE_PUBLISHABLE_KEY: sb_publishable_test
+        run: docker compose config --quiet
+      - name: Build the image
+        run: docker build -t pjqaqc:ci .
+      - name: Verify the editor boundary inside the image, with no network
+        run: |
+          docker run --rm -i --network none pjqaqc:ci /app/backend/.venv/bin/python - \
+            < backend/test_production.py
