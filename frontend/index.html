@@ -72,6 +72,7 @@
         </div>
 
         <button class="nav-link single" data-view="ai">🤖 AI 判讀</button>
+        <button class="nav-link single" data-view="guide">📖 操作指南</button>
       </nav>
     </aside>
 
@@ -374,6 +375,81 @@
         </div>
         <div class="ai-actions"><button id="ai-run" class="btn">AI 判讀</button></div>
         <div id="ai-result" class="ai-result"></div>
+      </section>
+
+      <!-- ============ 操作指南 ============ -->
+      <section id="view-guide" class="view">
+        <div class="view-head"><h2>操作指南</h2></div>
+        <p class="mode-hint">
+          第一次使用請依下方流程<strong>由上而下</strong>完成設定；設定完成後，日常只需「登錄品管結果」並檢視判讀。
+          流程圖中的方塊與「前往」按鈕都可直接跳到該頁面。
+        </p>
+
+        <div class="panel guide-block">
+          <h3>系統架構</h3>
+          <div class="guide-arch">
+            <div class="arch-card">
+              <div class="arch-kicker">主檔設定層 · 系統允許什麼</div>
+              <p>組別、儀器、檢體類別、檢驗項目字典、<b>檢驗設定 (assay)</b>、試劑 / 品管液 / 校正液產品與其關聯</p>
+              <span class="arch-freq">一次性設定，少變動</span>
+            </div>
+            <div class="arch-arrow">→</div>
+            <div class="arch-card">
+              <div class="arch-kicker">批號實體層 · 現場用哪一批</div>
+              <p>試劑 / 品管液 / 校正液批號、<b>品管目標值</b>（Mean / SD，版本化）、試劑上機紀錄</p>
+              <span class="arch-freq">收貨、換批時新增</span>
+            </div>
+            <div class="arch-arrow">→</div>
+            <div class="arch-card">
+              <div class="arch-kicker">交易稽核層 · 實際發生什麼</div>
+              <p>品管執行與結果（含 Mean / SD 快照、z-score、Westgard 判讀）、校正事件</p>
+              <span class="arch-freq">每日產生，不刪除</span>
+            </div>
+          </div>
+          <div class="guide-concepts">
+            <div><b>assay = 儀器 × 檢驗項目 × 檢體別</b>試劑、品管液、目標值都掛在 assay 上。GLU/B 在兩台儀器上是兩筆不同的 assay。</div>
+            <div><b>產品 ≠ 批號</b>產品是穩定定義，關聯掛在產品上；換批號只需新增批號，關聯不用動。</div>
+            <div><b>目標值版本化</b>Mean / SD 不可直接修改，平測會建立新版本並保留舊版，歷史判讀永遠可重現。</div>
+          </div>
+          <p class="guide-stack">技術架構：瀏覽器（frontend/）→ FastAPI（backend/）→ MySQL；「AI 判讀」另外連線 Anthropic Claude。</p>
+        </div>
+
+        <div class="panel guide-block">
+          <h3>設定流程圖</h3>
+          <div class="guide-flow-wrap">
+            <svg id="guide-flow" class="guide-flow" viewBox="0 0 960 750" role="img"
+                 aria-label="QAQC 系統設定流程圖"></svg>
+          </div>
+          <div class="guide-legend">
+            <span><i class="lg-solid"></i>必要步驟</span>
+            <span><i class="lg-dash"></i>選用</span>
+            <span>箭頭 = 必須先完成的前置步驟</span>
+            <span>🔁 換新品管液批號：⑦ 新增批號 → ⑨ 建立目標值 → ⑪ 登錄品管 → ⑩ 平測</span>
+          </div>
+        </div>
+
+        <div class="panel guide-block">
+          <h3>步驟說明</h3>
+          <div id="guide-steps"></div>
+        </div>
+
+        <div class="panel guide-block">
+          <h3>常見問題</h3>
+          <dl class="guide-faq">
+            <dt>登錄品管結果時，「品管液批號」下拉選單是空的？</dt>
+            <dd>此儀器的檢驗設定尚未關聯品管液產品（步驟 8），或該品管液尚未新增批號（步驟 7）。</dd>
+            <dt>選了批號，卻顯示「尚未建立任何目標值」？</dt>
+            <dd>到「品管目標值與平測」為該批號的每個 Level 建立目標值（步驟 9）。</dd>
+            <dt>想修改 Mean / SD，卻只能改備註欄位？</dt>
+            <dd>這是刻意的設計：Mean / SD 已被歷史結果引用。請在目標值列按「平測」建立新版本（步驟 10）。</dd>
+            <dt>換了一批新的品管液，要做哪些事？</dt>
+            <dd>新增批號（步驟 7）→ 建立原廠目標值（步驟 9）→ 日常登錄品管 → 數據足夠後平測（步驟 10）。產品與關聯都不需要更動。</dd>
+            <dt>新增一台備機要怎麼設定？</dt>
+            <dd>新增儀器時角色選「備機」並指定對應主機 → 在「檢驗設定」按「複製到備機」→ 為備機自行建立目標值並平測。</dd>
+            <dt>刪除時出現錯誤、被擋下？</dt>
+            <dd>該資料已被目標值或品管紀錄引用。請改用「停用」，系統會保留歷史資料以供稽核。</dd>
+          </dl>
+        </div>
       </section>
     </main>
   </div>

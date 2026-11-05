@@ -1714,6 +1714,185 @@ function renderMarkdown(md) {
   return html;
 }
 
+/* ==================================================== 操作指南 */
+// 流程圖節點與步驟說明共用同一份資料；x/y/w 為 SVG 座標（viewBox 960×750，節點高 56）
+const GUIDE_PHASES = [
+  { y: 10,  h: 100, name: "基礎主檔",   hint: "一次性設定" },
+  { y: 120, h: 100, name: "檢驗設定",   hint: "每台儀器" },
+  { y: 230, h: 100, name: "物料主檔",   hint: "收貨 / 換批" },
+  { y: 340, h: 100, name: "產品關聯",   hint: "每個 assay" },
+  { y: 450, h: 100, name: "品管目標值", hint: "每批 × 每 Level" },
+  { y: 560, h: 180, name: "日常品管",   hint: "每日 / 每班" },
+];
+
+const GUIDE_STEPS = [
+  { n: 1, phase: 0, title: "組別", sub: "生化組、血液組…", view: "sections", path: "基礎主檔 › 組別",
+    x: 180, y: 32, w: 150,
+    desc: "建立科別 / 工作區，例如生化組、血液組、免疫組。每台儀器都必須歸屬一個組別，各頁面的「組別 → 儀器」下拉選單也依此分群。",
+    tips: ["先檢查清單，已存在的組別不需重建。"] },
+  { n: 2, phase: 0, title: "儀器", sub: "序號 · 主機 / 備機", view: "instruments", path: "基礎主檔 › 儀器",
+    x: 380, y: 32, w: 170,
+    desc: "以序號（serial number）唯一識別一台儀器，並指定所屬組別與角色（主機 / 備機 / 其他）。",
+    tips: ["備機請在「對應主機」選擇其主機，之後才能使用「複製設定到備機」。",
+           "儀器除役請用停用而非刪除，歷史品管紀錄才能保留。"] },
+  { n: 3, phase: 0, title: "檢驗項目字典", sub: "全院共用", view: "test-items", path: "基礎主檔 › 檢驗項目字典",
+    x: 590, y: 32, w: 160,
+    desc: "全院共用的檢驗項目字典（如 GLU、Na、WBC），不綁定儀器——同一個項目在多台儀器、多種檢體上共用同一筆。",
+    tips: ["也可以跳過這步：在步驟 5 新增檢驗設定時勾選「項目字典沒有時自動建立」。"] },
+  { n: 4, phase: 0, title: "檢體類別", sub: "B / U / CSF…", view: "specimen-types", path: "基礎主檔 › 檢體類別",
+    x: 790, y: 32, w: 150,
+    desc: "檢體類別字典，系統已預設 B（血液）、U（尿液）、CSF、BF（體液）、ST（糞便）。",
+    tips: ["只有遇到新的檢體類型才需要新增。"] },
+  { n: 5, phase: 1, title: "檢驗設定", sub: "儀器 × 項目 × 檢體", view: "assays", path: "檢驗設定 › 檢驗設定 (assay)",
+    x: 380, y: 142, w: 170,
+    desc: "整個系統的核心：assay = 儀器 × 檢驗項目 × 檢體別。先在上方選擇儀器，再按「新增設定」，或用「批次新增」一次建立同一檢體的多個項目。",
+    tips: ["同一儀器的同一「項目 × 檢體」只能有一筆，例如 CRE/B 與 CRE/U 是兩筆不同設定。",
+           "可設定結果單位、小數位數、方法名稱與儀器端項目代碼。",
+           "儀器、項目、檢體是 assay 的身分，建立後不能修改；要變更請停用後另建。"] },
+  { opt: true, phase: 1, title: "複製到備機", sub: "選用 · 備機共用設定", view: "assays", path: "檢驗設定 › 複製到備機",
+    x: 180, y: 142, w: 150,
+    desc: "備機與主機跑相同項目時，在檢驗設定頁選主機後按「複製到備機」，一次複製 assay 與試劑 / 品管液 / 校正液關聯。",
+    tips: ["品管目標值預設不複製——備機需自行建立目標值並平測。", "已存在的設定會自動略過，不會覆蓋。"] },
+  { n: 6, phase: 2, title: "建立產品", sub: "試劑 / 品管液 / 校正液", view: "products", path: "物料主檔 › 產品與批號",
+    x: 590, y: 252, w: 170,
+    desc: "切換上方「試劑 / 品管液 / 校正液」頁籤後按「新增產品」。產品是穩定的定義（代碼、名稱、廠商、型錄編號、保存條件），不含批號。",
+    tips: ["一種品管液產品只建一次，由多個 assay 共用。"] },
+  { n: 7, phase: 2, title: "新增批號", sub: "每個 Level 一筆", view: "products", path: "物料主檔 › 產品與批號",
+    x: 790, y: 252, w: 150,
+    desc: "在產品下按「新增批號」，填入批號、效期、入庫日與狀態（一般選 AVAILABLE）。",
+    tips: ["品管液同一盒的 Level 1 / Level 2 / Level 3 要各新增一筆批號。",
+           "換新批號只需新增批號，不需重建產品或關聯。",
+           "過期、用完、召回時請變更批號狀態，而非刪除。"] },
+  { n: 8, phase: 3, title: "設定關聯", sub: "assay ↔ 產品", view: "assays", path: "檢驗設定 › 檢驗設定 (assay) › 關聯",
+    x: 380, y: 362, w: 170,
+    desc: "回到「檢驗設定」，在該項目那一列按「關聯」，勾選此 assay 使用的試劑、品管液與校正液產品。",
+    tips: ["⚠ 這一步沒做，後續「建立目標值」與「登錄品管結果」的品管液批號下拉選單會是空的。",
+           "關聯為整組覆寫；已被目標值或品管結果引用的關聯無法移除。",
+           "要登錄校正紀錄，assay 也必須關聯校正液產品。"] },
+  { n: 9, phase: 4, title: "建立目標值", sub: "原廠 Mean / SD", view: "qc-targets", path: "檢驗設定 › 品管目標值與平測",
+    x: 380, y: 472, w: 170,
+    desc: "選擇儀器後按「建立目標值」：選擇檢驗設定與品管液批號（Level），來源選「原廠值」，填入 Mean 與 SD（必須 > 0），可另填可接受上下限——這就是品管液的允收範圍。",
+    tips: ["每個 assay × 每個品管液 Level 各建一筆，例如 GLU 有 Level 1、Level 2 就要建兩筆。",
+           "Mean / SD 是 z-score 與 Westgard 判讀的依據。"] },
+  { n: 10, phase: 4, title: "平測", sub: "建立 LAB 版本", view: "qc-targets", path: "檢驗設定 › 品管目標值與平測 › 平測",
+    x: 180, y: 472, w: 150,
+    desc: "新批號累積足夠的實測數據後，在目標值清單該列按「平測」，填入實驗室自己的 Mean / SD。舊版本會自動收效並保留，系統另建 LAB 版本。",
+    tips: ["「待平測」清單會列出仍在使用原廠值的項目。",
+           "Mean / SD 不能直接編輯，修改一律透過平測建立新版本，確保歷史判讀可重現。"] },
+  { opt: true, phase: 5, title: "試劑上機", sub: "選用 · 上機紀錄", view: "reagent-loads", path: "物料主檔 › 試劑上機",
+    x: 180, y: 582, w: 150,
+    desc: "記錄哪一批試劑在何時裝到哪台儀器的哪個位置（如 R1），下機時按「下機」。",
+    tips: ["同一台儀器的同一位置同時只能有一批試劑在線上。", "此為追溯用紀錄，不影響品管登錄。"] },
+  { n: 11, phase: 5, title: "登錄品管結果", sub: "填量測值送出", view: "qc-run", path: "品管作業 › 登錄品管結果",
+    x: 380, y: 582, w: 170,
+    desc: "依序選擇組別 → 儀器 → 品管液批號，系統會列出此批號已設定目標值的項目；填入量測值（不登錄的留空）、執行時間與操作者後送出。",
+    tips: ["一瓶品管液跑一次可同時登錄多個項目。", "看不到項目表示該批號尚未建立目標值（回到步驟 9）。"] },
+  { n: 12, phase: 5, title: "自動判讀", sub: "z-score · Westgard", view: "qc-results", path: "品管作業 › 品管紀錄查詢",
+    x: 590, y: 582, w: 160,
+    desc: "送出後系統自動取當下生效的目標值計算 z-score，並以同 assay、同批號的歷史序列套用 Westgard 多規則，判為 PASS / WARNING / FAIL。",
+    tips: ["規則：1-2s（警告）、1-3s、2-2s、R-4s、4-1s、10x。",
+           "每筆結果都會快照當時的 Mean / SD / 單位，日後目標值變更也不影響歷史判讀。"] },
+  { noCard: true, phase: 5, title: "L-J Chart", sub: "趨勢圖", view: "lj", x: 790, y: 582, w: 150 },
+  { opt: true, phase: 5, title: "校正紀錄", sub: "選用 · 需關聯校正液", view: "calibration", path: "品管作業 › 校正紀錄",
+    x: 180, y: 662, w: 150,
+    desc: "儀器校正後按「登錄校正事件」，選擇涵蓋的檢驗設定與使用的校正液。",
+    tips: ["所選項目必須屬於此儀器，且已關聯該校正液產品（步驟 8）。"] },
+  { noCard: true, phase: 5, title: "儀表板", sub: "當日統計", view: "dashboard", x: 590, y: 662, w: 160 },
+  { noCard: true, phase: 5, title: "AI 判讀", sub: "Claude 分析建議", view: "ai", x: 790, y: 662, w: 150 },
+  { noNode: true, phase: 5, title: "檢視與分析", view: "dashboard", path: "儀表板 / 品管作業 / AI 判讀",
+    desc: "登錄後可在以下頁面檢視結果：",
+    tips: ["儀表板：當日品管筆數、PASS / WARNING / FAIL、違規明細與通過率。",
+           "品管紀錄查詢：依日期、儀器、項目、狀態篩選歷史紀錄。",
+           "L-J Chart：以 Mean ±1 / 2 / 3SD 繪製 Levey-Jennings 趨勢圖。",
+           "AI 判讀：由 Claude 依 Westgard 規則分析可能成因並給出矯正建議（後端需設定 ANTHROPIC_API_KEY）。",
+           "主檔關聯圖：檢查某台儀器的試劑、品管液與檢驗設定是否都已串好。"] },
+];
+
+// 箭頭路徑：終點留 2–4px 給箭頭；end:false 為匯流線（不畫箭頭）
+const GUIDE_EDGES = [
+  { d: "M330,60 H376" },                    // 組別 → 儀器
+  { d: "M465,88 V138" },                    // 儀器 → 檢驗設定
+  { d: "M865,88 V115 H670", end: false },   // 檢體類別 匯入
+  { d: "M670,88 V170 H554" },               // 項目字典 → 檢驗設定
+  { d: "M380,170 H334", opt: true },        // 檢驗設定 → 複製到備機
+  { d: "M760,280 H786" },                   // 產品 → 批號
+  { d: "M465,198 V358" },                   // 檢驗設定 → 關聯
+  { d: "M675,308 V390 H554" },              // 產品 → 關聯
+  { d: "M465,418 V468" },                   // 關聯 → 目標值
+  { d: "M865,308 V500 H554" },              // 批號 → 目標值
+  { d: "M380,500 H334" },                   // 目標值 → 平測
+  { d: "M465,528 V578" },                   // 目標值 → 登錄品管
+  { d: "M330,610 H376", opt: true },        // 試劑上機 → 登錄品管
+  { d: "M550,610 H586" },                   // 登錄品管 → 自動判讀
+  { d: "M750,610 H786" },                   // 自動判讀 → L-J
+  { d: "M670,638 V658" },                   // 自動判讀 → 儀表板
+  { d: "M865,638 V658" },                   // L-J → AI 判讀
+];
+
+function goView(name) {
+  const link = document.querySelector(`.nav-link[data-view="${name}"]`);
+  if (!link) return;
+  const group = link.closest(".nav-group");
+  if (group) group.classList.add("open");
+  link.click();
+  window.scrollTo({ top: 0, behavior: "smooth" });
+}
+
+function renderGuide() {
+  const svg = document.getElementById("guide-flow");
+  const bands = GUIDE_PHASES.map((p, i) => `
+    <rect class="fband ${i % 2 ? "" : "alt"}" x="0" y="${p.y}" width="960" height="${p.h}" rx="10" />
+    <text class="fstep" x="16" y="${p.y + 30}">STEP ${i + 1}</text>
+    <text class="fphase" x="16" y="${p.y + 50}">${esc(p.name)}</text>
+    <text class="fhint" x="16" y="${p.y + 68}">${esc(p.hint)}</text>`).join("");
+  const edges = GUIDE_EDGES.map((e) =>
+    `<path class="fedge ${e.opt ? "opt" : ""}" d="${e.d}" ${e.end === false ? "" : `marker-end="url(#farrow)"`} />`).join("");
+  const nodes = GUIDE_STEPS.filter((s) => !s.noNode).map((s) => {
+    const tx = s.x + (s.n ? 38 : 14);
+    return `<g class="fnode ${s.opt ? "opt" : ""}" data-goto="${s.view}" tabindex="0" role="button"
+               aria-label="前往 ${esc(s.title)}">
+      <title>前往：${esc(s.path || s.title)}</title>
+      <rect x="${s.x}" y="${s.y}" width="${s.w}" height="56" rx="10" />
+      ${s.n ? `<circle cx="${s.x + 20}" cy="${s.y + 28}" r="11" />
+               <text class="fbadge" x="${s.x + 20}" y="${s.y + 32}" text-anchor="middle">${s.n}</text>` : ""}
+      <text class="ftitle" x="${tx}" y="${s.y + 25}">${esc(s.title)}</text>
+      <text class="fsub" x="${tx}" y="${s.y + 43}">${esc(s.sub)}</text>
+    </g>`;
+  }).join("");
+  svg.innerHTML = `<defs><marker id="farrow" viewBox="0 0 10 10" refX="9" refY="5"
+      markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path class="farrow-head" d="M0,0 L10,5 L0,10 z" /></marker></defs>${bands}${edges}${nodes}`;
+
+  svg.querySelectorAll(".fnode").forEach((g) => {
+    g.addEventListener("click", () => goView(g.dataset.goto));
+    g.addEventListener("keydown", (ev) => {
+      if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); goView(g.dataset.goto); }
+    });
+  });
+
+  const box = document.getElementById("guide-steps");
+  box.innerHTML = GUIDE_PHASES.map((p, i) => {
+    const steps = GUIDE_STEPS.filter((s) => s.phase === i && !s.noCard);
+    return `<div class="gs-phase"><span class="gs-step">STEP ${i + 1}</span>${esc(p.name)}
+        <span class="muted-cell">（${esc(p.hint)}）</span></div>` +
+      steps.map((s) => `
+        <div class="guide-step ${s.opt ? "opt" : ""}">
+          <div class="gs-num">${s.n ?? (s.opt ? "選" : "▸")}</div>
+          <div class="gs-body">
+            <div class="gs-head">
+              <h4>${esc(s.title)}</h4>
+              <span class="gs-path">${esc(s.path)}</span>
+              <button type="button" class="btn-xs" data-goto="${s.view}">前往 →</button>
+            </div>
+            <p>${esc(s.desc)}</p>
+            ${s.tips?.length ? `<ul>${s.tips.map((t) => `<li>${esc(t)}</li>`).join("")}</ul>` : ""}
+          </div>
+        </div>`).join("");
+  }).join("");
+  box.querySelectorAll("button[data-goto]").forEach((b) =>
+    b.addEventListener("click", () => goView(b.dataset.goto)));
+}
+
 /* ==================================================== 各頁面初始化掛勾 */
 Object.assign(VIEW_INIT, {
   dashboard: () => loadDashboard(),
@@ -1730,6 +1909,7 @@ Object.assign(VIEW_INIT, {
   "test-items": (first) => { if (first) loadTestItems(); },
   "specimen-types": (first) => { if (first) loadSpecimens(); },
   sections: (first) => { if (first) loadSections(); },
+  guide: (first) => { if (first) renderGuide(); },
 });
 
 /* ==================================================== 啟動 */
