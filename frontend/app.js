@@ -13,14 +13,10 @@ const nowLocal = () => new Date(Date.now() - new Date().getTimezoneOffset() * 60
   .toISOString().slice(0, 16);
 
 async function api(path, opts) {
-  const res = await fetch(API + path, opts);
-  if (res.headers.get("X-PJQAQC-Auth") === "required") {
-    if (res.status === 401) {
-      window.location.replace("/login");
-      throw new Error("請重新登入");
-    }
-    const logoutForm = document.getElementById("logout-form");
-    if (logoutForm) logoutForm.hidden = false;
+  const res = MODE === "editor" ? await fetch(API + path, opts) : await window.pjqaqcDemoFetch(path, opts);
+  if (MODE === "editor" && res.status === 401) {
+    openLogin("登入已逾時，請重新登入後再試一次。");
+    throw new Error("登入已逾時，請重新登入");
   }
   const text = await res.text();
   let body;
@@ -51,10 +47,97 @@ function toast(msg, type = "") {
   toastTimer = setTimeout(() => (el.hidden = true), 4000);
 }
 
+// 部分頁面的載入函式沒有自行處理錯誤；後端斷線或登入逾時時至少要讓使用者看得到。
+window.addEventListener("unhandledrejection", (e) => {
+  e.preventDefault();
+  toast("❌ " + ((e.reason && e.reason.message) || "操作失敗"), "err");
+});
+
 function setMsg(id, text, cls = "") {
   const el = document.getElementById(id);
   if (el) { el.className = "add-msg " + cls; el.textContent = text; }
 }
+
+/* ============================================================ 模式與登入 */
+// demo：未登入。資料全部來自 demo-data.js，不連後端也不連資料庫，無法寫入。
+// editor：已通過 Supabase Auth 登入（HttpOnly cookie），走正式 API，可編輯。
+let MODE = "loading";
+
+function setMode(mode, session = {}) {
+  MODE = mode;
+  document.body.dataset.mode = mode;
+  const editor = mode === "editor";
+  document.getElementById("mode-badge").textContent = editor ? "編輯者模式" : "DEMO 瀏覽模式";
+  document.getElementById("auth-email").textContent = session.local ? "本機開發" : (session.email || "");
+  document.getElementById("login-open").hidden = editor;
+  document.getElementById("logout").hidden = !editor || Boolean(session.local);
+}
+
+async function detectMode() {
+  try {
+    const res = await fetch(API + "/api/auth/session");
+    const session = res.ok ? await res.json() : {};
+    if (res.status >= 500) toast("編輯者後端暫時無法連線，目前以 DEMO 模式瀏覽", "err");
+    setMode(session.authenticated ? "editor" : "demo", session);
+  } catch {
+    setMode("demo");
+  }
+}
+
+function openLogin(hint) {
+  document.getElementById("login-hint").textContent = hint || "請使用系統管理員核發的編輯者帳號登入。";
+  setMsg("login-msg", "");
+  document.getElementById("login-modal").classList.add("open");
+  document.getElementById("login-email").focus();
+}
+
+function closeLogin() {
+  document.getElementById("login-modal").classList.remove("open");
+  document.getElementById("login-password").value = "";
+}
+
+document.getElementById("login-open").addEventListener("click", () => openLogin());
+document.getElementById("login-close").addEventListener("click", closeLogin);
+document.getElementById("login-cancel").addEventListener("click", closeLogin);
+document.getElementById("login-modal").addEventListener("click", (e) => {
+  if (e.target.id === "login-modal") closeLogin();
+});
+document.getElementById("login-form").addEventListener("keydown", (e) => {
+  if (e.key === "Escape") { e.stopPropagation(); closeLogin(); }
+});
+
+document.getElementById("login-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const submit = document.getElementById("login-submit");
+  submit.disabled = true;
+  setMsg("login-msg", "登入中…");
+  try {
+    const res = await fetch(API + "/api/auth/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        email: document.getElementById("login-email").value.trim(),
+        password: document.getElementById("login-password").value,
+      }),
+    }).catch(() => null);
+    if (!res) throw new Error("無法連線至登入服務，請稍候再試");
+    const body = await res.json().catch(() => null);
+    if (!res.ok) throw new Error((body && body.detail) || "目前無法登入，請稍候再試");
+    closeLogin();
+    if (MODE === "editor") toast("已重新登入，請再操作一次", "ok");
+    else window.location.reload();
+  } catch (err) {
+    setMsg("login-msg", "❌ " + err.message, "err");
+  } finally {
+    submit.disabled = false;
+  }
+});
+
+document.getElementById("logout").addEventListener("click", async () => {
+  const res = await fetch(API + "/api/auth/logout", { method: "POST" }).catch(() => null);
+  if (res && res.ok) window.location.reload();
+  else toast("登出失敗，請再試一次", "err");
+});
 
 /* ============================================================ 導覽與主題 */
 const views = document.querySelectorAll(".view");
@@ -66,6 +149,10 @@ const VIEW_LOADED = new Set();
 navLinks.forEach((t) => {
   t.addEventListener("click", () => {
     if (t.classList.contains("disabled")) return;
+    if (MODE === "demo" && t.classList.contains("requires-editor")) {
+      openLogin(`「${t.textContent.trim()}」需要編輯者帳號，請先登入。`);
+      return;
+    }
     navLinks.forEach((x) => x.classList.remove("active"));
     views.forEach((v) => v.classList.remove("active"));
     t.classList.add("active");
@@ -83,6 +170,15 @@ document.querySelectorAll(".nav-group-title").forEach((btn) =>
   btn.addEventListener("click", () => btn.parentElement.classList.toggle("open")));
 document.getElementById("sidebar-toggle").addEventListener("click", () =>
   document.querySelector(".layout").classList.toggle("sidebar-collapsed"));
+
+// 手機寬度下側邊欄會蓋住內容：預設收合，選完頁面後也收起來
+const collapseSidebarOnPhone = () => {
+  if (window.matchMedia("(max-width: 860px)").matches) {
+    document.querySelector(".layout").classList.add("sidebar-collapsed");
+  }
+};
+collapseSidebarOnPhone();
+navLinks.forEach((t) => t.addEventListener("click", collapseSidebarOnPhone));
 
 const themeToggle = document.getElementById("theme-toggle");
 function applyTheme(theme) {
@@ -155,7 +251,8 @@ CASCADES.forEach(([secId, instId, all]) => {
 
 /* ==================================================== 通用表格渲染 */
 // columns: [{key, label, render?(row), cls?}]；actions: (row) => [{label, cls, onClick}]
-function renderTable(tableId, columns, rows, actions, emptyText = "無資料") {
+function renderTable(tableId, columns, rows, rowActions, emptyText = "無資料") {
+  const actions = MODE === "editor" ? rowActions : null;  // DEMO 不顯示「操作」欄
   const table = document.getElementById(tableId);
   const thead = table.querySelector("thead");
   const tbody = table.querySelector("tbody");
@@ -1064,7 +1161,7 @@ async function loadProducts() {
           <h4>${esc(p.product_name)}</h4>
           <span class="prod-meta">${esc(p.product_code)}${p.manufacturer ? " ｜ " + esc(p.manufacturer) : ""}</span>
           ${activePill(p)}
-          <div class="head-actions">
+          <div class="head-actions edit-only">
             <button class="btn-xs" data-act="edit">編輯</button>
             <button class="btn-xs" data-act="addlot">新增批號</button>
             <button class="btn-xs" data-act="toggle">${p.active ? "停用" : "啟用"}</button>
@@ -1078,7 +1175,7 @@ async function loadProducts() {
             <span class="muted-cell">效期 ${esc(l.expiry_date ?? "-")}</span>
             <span class="state-pill ${l.lot_status === "IN_USE" || l.lot_status === "AVAILABLE" ? "on" : "off"}">${esc(l.lot_status)}</span>
             ${"parallel_test_done" in l ? pill(l.parallel_test_done, "已平測", "未平測") : ""}
-            <div class="row-actions">
+            <div class="row-actions edit-only">
               <button class="btn-xs" data-lot="edit">編輯</button>
               <button class="btn-xs" data-lot="status">狀態</button>
               <button class="btn-xs danger" data-lot="del">刪除</button>
@@ -1333,6 +1430,8 @@ async function loadInstrumentsPage() {
   ]);
   setMsg("inst-msg", `共 ${d.all.length} 台`);
 }
+document.getElementById("inst-refresh").addEventListener("click", loadInstrumentsPage);
+document.getElementById("inst-inactive").addEventListener("change", loadInstrumentsPage);
 
 const instFields = () => [
   { name: "serial_number", label: "序號*", type: "text", required: true },
@@ -1920,6 +2019,7 @@ Object.assign(VIEW_INIT, {
   ["res-from", "lj-from", "ai-from", "cal-from"].forEach((id) => (document.getElementById(id).value = ago));
   ["res-to", "lj-to", "ai-to", "cal-to"].forEach((id) => (document.getElementById(id).value = t));
   document.getElementById("run-at").value = nowLocal();
+  await detectMode();
   try {
     await loadMasters();
     loadDashboard();

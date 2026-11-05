@@ -6,7 +6,7 @@
   <title>QAQC 品管管理系統</title>
   <link rel="stylesheet" href="style.css" />
 </head>
-<body>
+<body data-mode="loading">
   <header class="topbar">
     <div class="brand">
       <button id="sidebar-toggle" class="icon-btn" title="收合選單">☰</button>
@@ -17,9 +17,12 @@
       </div>
     </div>
     <div class="topbar-right">
-      <form id="logout-form" action="/logout" method="post" hidden>
-        <button type="submit" class="btn-xs">登出</button>
-      </form>
+      <div class="auth-box">
+        <span id="mode-badge" class="mode-badge"></span>
+        <span id="auth-email" class="auth-email"></span>
+        <button type="button" id="login-open" class="btn-sm" hidden>登入</button>
+        <button type="button" id="logout" class="btn-sm ghost" hidden>登出</button>
+      </div>
       <label class="theme-switch" title="切換亮 / 暗色模式">
         <span class="theme-icon">🌙</span>
         <input type="checkbox" id="theme-toggle" />
@@ -37,7 +40,7 @@
         <div class="nav-group open">
           <button class="nav-group-title">📝 品管作業 <span class="chev">▾</span></button>
           <div class="nav-sub">
-            <button class="nav-link" data-view="qc-run">登錄品管結果</button>
+            <button class="nav-link requires-editor" data-view="qc-run">登錄品管結果</button>
             <button class="nav-link" data-view="qc-results">品管紀錄查詢</button>
             <button class="nav-link" data-view="lj">L-J Chart</button>
             <button class="nav-link" data-view="calibration">校正紀錄</button>
@@ -71,12 +74,17 @@
           </div>
         </div>
 
-        <button class="nav-link single" data-view="ai">🤖 AI 判讀</button>
+        <button class="nav-link single requires-editor" data-view="ai">🤖 AI 判讀</button>
         <button class="nav-link single" data-view="guide">📖 操作指南</button>
       </nav>
     </aside>
 
     <main>
+      <div class="demo-banner" role="status">
+        <strong>DEMO 瀏覽模式</strong>
+        <span>畫面為合成的示範資料，僅供瀏覽、無法編輯，也不會連到正式資料庫。編輯者請由右上角登入。</span>
+      </div>
+
       <!-- ============ 儀表板 ============ -->
       <section id="view-dashboard" class="view active">
         <div class="view-head">
@@ -175,7 +183,7 @@
       <section id="view-calibration" class="view">
         <div class="view-head">
           <h2>校正紀錄</h2>
-          <button class="btn-sm" id="cal-new">登錄校正事件</button>
+          <button class="btn-sm edit-only" id="cal-new">登錄校正事件</button>
         </div>
         <div class="filter-bar">
           <div class="filter-item"><label>組別</label><select id="cal-section"></select></div>
@@ -192,9 +200,9 @@
         <div class="view-head">
           <h2>檢驗設定 (assay)</h2>
           <div class="head-actions">
-            <button class="btn-sm" id="assay-new">新增設定</button>
-            <button class="btn-sm" id="assay-batch">批次新增</button>
-            <button class="btn-sm ghost" id="assay-copy">複製到備機</button>
+            <button class="btn-sm edit-only" id="assay-new">新增設定</button>
+            <button class="btn-sm edit-only" id="assay-batch">批次新增</button>
+            <button class="btn-sm ghost edit-only" id="assay-copy">複製到備機</button>
           </div>
         </div>
         <p class="mode-hint">
@@ -217,7 +225,7 @@
       <section id="view-qc-targets" class="view">
         <div class="view-head">
           <h2>品管目標值與平測</h2>
-          <button class="btn-sm" id="target-new">建立目標值</button>
+          <button class="btn-sm edit-only" id="target-new">建立目標值</button>
         </div>
         <p class="mode-hint">
           目標值屬於 <strong>assay × 品管液批號</strong>，且版本化：平測前用原廠值（MANUFACTURER），
@@ -280,8 +288,8 @@
         <div class="view-head">
           <h2>產品與批號</h2>
           <div class="head-actions">
-            <button class="btn-sm" id="prod-new">新增產品</button>
-            <button class="btn-sm" id="lot-new">新增批號</button>
+            <button class="btn-sm edit-only" id="prod-new">新增產品</button>
+            <button class="btn-sm edit-only" id="lot-new">新增批號</button>
           </div>
         </div>
         <p class="mode-hint">
@@ -305,7 +313,7 @@
       <section id="view-reagent-loads" class="view">
         <div class="view-head">
           <h2>試劑上機</h2>
-          <button class="btn-sm" id="load-new">試劑上機</button>
+          <button class="btn-sm edit-only" id="load-new">試劑上機</button>
         </div>
         <div class="filter-bar">
           <div class="filter-item"><label>組別</label><select id="load-section"></select></div>
@@ -321,7 +329,7 @@
       <section id="view-instruments" class="view">
         <div class="view-head">
           <h2>儀器</h2>
-          <button class="btn-sm" id="inst-new">新增儀器</button>
+          <button class="btn-sm edit-only" id="inst-new">新增儀器</button>
         </div>
         <div class="filter-bar">
           <label class="check-label"><input type="checkbox" id="inst-inactive" />含已停用</label>
@@ -334,7 +342,7 @@
       <section id="view-test-items" class="view">
         <div class="view-head">
           <h2>檢驗項目字典</h2>
-          <button class="btn-sm" id="item-new">新增項目</button>
+          <button class="btn-sm edit-only" id="item-new">新增項目</button>
         </div>
         <p class="mode-hint">全院共用字典，<strong>不綁儀器</strong>。同一個 CRE 在多台儀器、多種檢體上共用這一筆。</p>
         <div class="filter-bar">
@@ -348,7 +356,7 @@
       <section id="view-specimen-types" class="view">
         <div class="view-head">
           <h2>檢體類別</h2>
-          <button class="btn-sm" id="spec-new">新增檢體類別</button>
+          <button class="btn-sm edit-only" id="spec-new">新增檢體類別</button>
         </div>
         <div class="filter-bar"><span id="spec-msg" class="add-msg"></span></div>
         <div class="table-wrap"><table id="spec-table"><thead></thead><tbody></tbody></table></div>
@@ -357,7 +365,7 @@
       <section id="view-sections" class="view">
         <div class="view-head">
           <h2>組別</h2>
-          <button class="btn-sm" id="sec-new">新增組別</button>
+          <button class="btn-sm edit-only" id="sec-new">新增組別</button>
         </div>
         <div class="filter-bar"><span id="sec-msg" class="add-msg"></span></div>
         <div class="table-wrap"><table id="sec-table"><thead></thead><tbody></tbody></table></div>
@@ -411,7 +419,7 @@
             <div><b>產品 ≠ 批號</b>產品是穩定定義，關聯掛在產品上；換批號只需新增批號，關聯不用動。</div>
             <div><b>目標值版本化</b>Mean / SD 不可直接修改，平測會建立新版本並保留舊版，歷史判讀永遠可重現。</div>
           </div>
-          <p class="guide-stack">技術架構：瀏覽器（frontend/）→ FastAPI（backend/）→ MySQL；「AI 判讀」另外連線 Anthropic Claude。</p>
+          <p class="guide-stack">技術架構：瀏覽器 → Cloudflare Worker → FastAPI → Supabase PostgreSQL；DEMO 模式只在瀏覽器內執行，不連後端。「AI 判讀」另外連線 Anthropic Claude。</p>
         </div>
 
         <div class="panel guide-block">
@@ -471,8 +479,33 @@
     </div>
   </div>
 
+  <!-- ============ 編輯者登入 ============ -->
+  <div class="modal-backdrop" id="login-modal">
+    <form class="modal login-modal" id="login-form">
+      <div class="modal-head">
+        <h3>編輯者登入</h3>
+        <button type="button" class="icon-btn" id="login-close" aria-label="關閉">✕</button>
+      </div>
+      <p class="modal-hint" id="login-hint"></p>
+      <div class="form-grid modal-body">
+        <label class="full">電子郵件
+          <input type="email" id="login-email" autocomplete="username" required maxlength="254" />
+        </label>
+        <label class="full">密碼
+          <input type="password" id="login-password" autocomplete="current-password" required maxlength="1024" />
+        </label>
+      </div>
+      <div class="modal-foot">
+        <span id="login-msg" class="add-msg" role="alert"></span>
+        <button type="button" class="btn-sm ghost" id="login-cancel">取消</button>
+        <button type="submit" class="btn-sm" id="login-submit">登入</button>
+      </div>
+    </form>
+  </div>
+
   <div id="toast" class="toast" hidden></div>
 
+  <script src="demo-data.js"></script>
   <script src="app.js"></script>
 </body>
 </html>
