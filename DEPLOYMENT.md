@@ -173,7 +173,7 @@ systemctl --user enable --now pjqaqc-api pjqaqc-tunnel
 
    ```bash
    cd ~/pjqaqc-deployment/code
-   git fetch origin main
+   git fetch origin +refs/heads/main:refs/remotes/origin/main
    git show origin/main:deploy/install-runner.sh > /tmp/install-runner.sh
    bash /tmp/install-runner.sh
    ```
@@ -208,7 +208,7 @@ GitHub [不建議公開 repo 使用 self-hosted runner](https://docs.github.com/
 
 ```bash
 cd ~/pjqaqc-deployment/code
-git fetch origin
+git fetch origin +refs/heads/main:refs/remotes/origin/main
 git checkout --detach origin/main
 (cd backend && ../../bin/uv sync --locked --no-dev)
 systemctl --user restart pjqaqc-api
