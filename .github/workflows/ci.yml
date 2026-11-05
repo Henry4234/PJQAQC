@@ -18,7 +18,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Run the Worker and DEMO tests
-        run: node --test tests/worker.test.mjs tests/demo-data.test.mjs
+        run: node --test tests/worker.test.mjs tests/demo-data.test.mjs tests/audit-tables.test.mjs
       - name: Check that the page scripts parse
         run: |
           node --check frontend/app.js
@@ -33,12 +33,17 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
-      - name: Validate Compose
+      - name: Validate Compose and confirm no host ports are published
         env:
           PUBLIC_HOSTNAME: qaqc.example.com
           SUPABASE_URL: https://aaaaaaaaaaaaaaaaaaaa.supabase.co
           SUPABASE_PUBLISHABLE_KEY: sb_publishable_test
-        run: docker compose config --quiet
+        run: |
+          docker compose config --quiet
+          if docker compose config | grep -E '^\s+ports:'; then
+            echo "::error::The API must only be reachable through the Cloudflare Worker."
+            exit 1
+          fi
       - name: Build the image
         run: docker build -t pjqaqc:ci .
       - name: Verify the editor boundary inside the image, with no network

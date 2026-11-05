@@ -110,6 +110,23 @@ def check_boundary():
         assert client.get("/docs", headers=EDGE).status_code == 404
         assert client.get("/", headers=EDGE).status_code == 404, "the portal is served by the Worker"
 
+        # QC results and calibration events are append-only, even for an editor.
+        import manage
+
+        audit_tables = {"qc_runs", "qc_results", "qc_result_reagents", "calibration_events",
+                        "calibration_event_assays", "calibration_event_reagents"}
+        assert not audit_tables & {table for table, *_ in manage._RESOURCES.values()}
+        for method, path in (
+            ("PUT", "/api/qc-results/1"), ("PATCH", "/api/qc-results/1"), ("DELETE", "/api/qc-results/1"),
+            ("PATCH", "/api/qc-results/1/active"), ("PATCH", "/api/qc-results/1/status"),
+            ("PATCH", "/api/qc-runs/1"), ("DELETE", "/api/qc-runs/1"), ("PATCH", "/api/qc-runs/1/status"),
+            ("DELETE", "/api/calibration-events/1"), ("PATCH", "/api/calibration-events/1"),
+        ):
+            status = client.request(
+                method, path, headers=WRITE, json={"active": False, "lot_status": "RECALLED"},
+            ).status_code
+            assert status in {404, 405}, f"{method} {path} returned {status} for an editor"
+
         # A session does not excuse a missing Origin or the edge secret.
         assert client.post("/api/sections", json={}, headers=EDGE).status_code == 403
         assert client.get("/api/health").status_code == 404

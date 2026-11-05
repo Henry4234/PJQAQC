@@ -31,7 +31,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Run the Worker and DEMO tests
-        run: node --test tests/worker.test.mjs tests/demo-data.test.mjs
+        run: node --test tests/worker.test.mjs tests/demo-data.test.mjs tests/audit-tables.test.mjs
       - name: Deploy the Worker
         env:
           API_ORIGIN: ${{ vars.API_ORIGIN }}
