@@ -54,13 +54,7 @@ else:
 
 app.include_router(register.router)
 app.include_router(manage.router)
-
-ANTHROPIC_API_KEY = (
-    os.environ.get("ANTHROPIC_API_KEY", "")
-    if not PRODUCTION or os.environ.get("ENABLE_AI_INTERPRET") == "1" else ""
-)
-AI_MODEL = os.environ.get("AI_MODEL", "claude-opus-4-8")
-GUIDE_PATH = Path(__file__).resolve().parent / "westgard_guide.md"
+app.include_router(ai_interpret.router)
 
 
 def _today() -> str:
@@ -564,71 +558,9 @@ def er_graph(instrument_serial_number: str = Query(...)):
     }
 
 
-# ============================ AI 判讀 ============================ #
-class AIInterpretIn(BaseModel):
-    section_name: str | None = None
-    instrument_serial_number: str | None = None
-    item_code: str | None = None
-    date_from: str | None = None
-    date_to: str | None = None
-
-
-def _load_guide() -> str:
-    try:
-        return GUIDE_PATH.read_text(encoding="utf-8")
-    except FileNotFoundError:
-        return "你是一位醫學檢驗品保專家，請依 Westgard 多規則判讀品管數據，並以繁體中文回覆。"
-
-
-def _format_for_ai(rows: list[dict]) -> str:
-    header = (
-        "| 時間 | 儀器 | 項目 | 檢體 | 品管液 | 濃度 | 批號 | 結果 | 單位 | Mean | SD | Z | 狀態 | Westgard |\n"
-        "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|\n"
-    )
-    lines = []
-    for r in rows:
-        flags = r.get("westgard_flags")
-        flags = ", ".join(flags) if isinstance(flags, list) else (flags or "-")
-        lines.append(
-            f"| {r['run_at']} | {r['instrument_name']} | {r['item_code']} | {r['specimen_code']} | "
-            f"{r['qc_product_name']} | {r['qc_level']} | {r['qc_lot_number']} | "
-            f"{r['result_value']} | {r.get('unit_snapshot') or ''} | "
-            f"{r.get('target_mean_snapshot') or ''} | {r.get('target_sd_snapshot') or ''} | "
-            f"{r.get('z_score') or ''} | {r['result_status']} | {flags} |"
-        )
-    return header + "\n".join(lines)
-
-
-@app.post("/api/ai-interpret", summary="AI 品管判讀")
-def ai_interpret(req: AIInterpretIn):
-    if PRODUCTION and not ANTHROPIC_API_KEY:
-        raise HTTPException(status_code=503, detail="正式環境尚未啟用 AI 判讀。")
-    if not ANTHROPIC_API_KEY:
-        raise HTTPException(
-            status_code=400,
-            detail="尚未設定 ANTHROPIC_API_KEY，請於 backend/.env 填入後重啟伺服器。",
-        )
-    rows = list_qc_results(
-        date_from=req.date_from, date_to=req.date_to, section_name=req.section_name,
-        instrument_serial_number=req.instrument_serial_number, item_code=req.item_code,
-        specimen_code=None, result_status=None, limit=1000,
-    )
-    if not rows:
-        raise HTTPException(status_code=404, detail="此條件下查無品管資料，無法判讀。")
-
-
-@app.get("/api/ready")
-def ready():
-    try:
-        db.fetch_one("SELECT 1 FROM lab_sections LIMIT 1")
-    except db.DATABASE_ERRORS:
-        raise HTTPException(status_code=503, detail="資料庫尚未就緒") from None
-    return {"status": "ready"}
-
-
-@app.exception_handler(db.DATA_ERRORS[0])
-async def invalid_database_value(request: Request, exc: Exception):
-    return JSONResponse({"detail": "資料格式或數值範圍不正確"}, status_code=422)
+@app.get("/api/health")
+def health():
+    return {"status": "ok", "version": "3.0.0", "time": datetime.now().isoformat()}
 
 
 @app.get("/api/ready")

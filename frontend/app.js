@@ -1975,13 +1975,13 @@ const GUIDE_STEPS = [
     desc: "儀器校正後按「登錄校正事件」，選擇涵蓋的檢驗設定與使用的校正液。",
     tips: ["所選項目必須屬於此儀器，且已關聯該校正液產品（步驟 8）。"] },
   { noCard: true, phase: 5, title: "儀表板", sub: "當日統計", view: "dashboard", x: 590, y: 662, w: 160 },
-  { noCard: true, phase: 5, title: "AI 判讀", sub: "Claude 分析建議", view: "ai", x: 790, y: 662, w: 150 },
+  { noCard: true, phase: 5, title: "AI 判讀", sub: "AI 分析建議", view: "ai", x: 790, y: 662, w: 150 },
   { noNode: true, phase: 5, title: "檢視與分析", view: "dashboard", path: "儀表板 / 品管作業 / AI 判讀",
     desc: "登錄後可在以下頁面檢視結果：",
     tips: ["儀表板：當日品管筆數、PASS / WARNING / FAIL、違規明細與通過率。",
            "品管紀錄查詢：依日期、儀器、項目、狀態篩選歷史紀錄。",
            "L-J Chart：以 Mean ±1 / 2 / 3SD 繪製 Levey-Jennings 趨勢圖。",
-           "AI 判讀：由 Claude 依 Westgard 規則分析可能成因並給出矯正建議（後端需設定 ANTHROPIC_API_KEY）。",
+           "AI 判讀：由 Claude 或 OpenAI 依 Westgard 規則分析可能成因並給出矯正建議（後端需在 backend/.env 設定金鑰）。",
            "主檔關聯圖：檢查某台儀器的試劑、品管液與檢驗設定是否都已串好。"] },
 ];
 
@@ -2086,6 +2086,7 @@ Object.assign(VIEW_INIT, {
   "test-items": (first) => { if (first) loadTestItems(); },
   "specimen-types": (first) => { if (first) loadSpecimens(); },
   sections: (first) => { if (first) loadSections(); },
+  ai: (first) => { loadAIItems(); if (first) loadAIProviders(); },
   guide: (first) => { if (first) renderGuide(); },
 });
 
