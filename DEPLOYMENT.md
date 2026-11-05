@@ -5,14 +5,16 @@
 | 使用者 | 連線路徑 | 資料 |
 | --- | --- | --- |
 | 訪客（DEMO 模式） | 瀏覽器 → Cloudflare Worker 靜態檔 | 瀏覽器內的合成資料，不連後端也不連資料庫 |
-| 編輯者 | 瀏覽器 → Cloudflare Worker → Tunnel → FastAPI → Supabase | 正式資料，可編輯 |
-| 維護 | 管理員裝置 → Tailscale → Ubuntu SSH | |
+| 編輯者 | 瀏覽器 → Cloudflare Worker → Workers VPC → Tunnel → FastAPI → Supabase | 正式資料，可編輯 |
+| 維護 | 管理員裝置 → Tailscale → Ubuntu SSH | 不經過這條路徑提供 API |
 
 入口網站只有一個。未登入就是 DEMO；由右上角登入通過後才是編輯者模式。
 
 - **流量**：靜態檔不計入 Worker 請求額度。沒有工作階段 cookie 的 `/api/*` 請求在 Worker 就結束，訪客再多也不會碰到 FastAPI 或 Supabase。
 - **帳號**：帳號密碼由 Supabase Auth 管理。FastAPI 驗證密碼後，檢查 `app_metadata.pjqaqc_access`，再簽發 30 分鐘的 HttpOnly cookie。
-- **防護分層**：Worker 擋掉匿名請求與跨站寫入，並對登入與 API 限速；真正的權限檢查在 FastAPI。FastAPI 只接受帶 `EDGE_SHARED_SECRET` 的請求，其他一律回 404。
+- **只能經 Worker 進入**：FastAPI 沒有公開網址，也沒有發布主機連接埠（CI 會檢查），連 Tailscale 也連不到；唯一路徑是 Worker 經 Workers VPC 進 Tunnel。FastAPI 另外要求 `EDGE_SHARED_SECRET`，其他請求一律回 404。
+- **防護分層**：Worker 擋掉匿名請求與跨站寫入，並對登入與 API 限速；真正的權限檢查在 FastAPI。
+- **稽核紀錄**：`qc_results` 等品管與校正紀錄只能新增。API 沒有修改或刪除的路由，`pjqaqc_app` 只有 `INSERT`、`SELECT` 權限，刪除上層主檔也不會連帶刪除；`tests/audit-tables.test.mjs` 會檢查每個遷移。
 - **只有 DEMO 時**：Worker 未設定後端也能運作，DEMO 正常，只有登入會回 503。可以先上線 DEMO，之後再接後端。
 
 ## CI/CD
@@ -29,8 +31,8 @@
 | 名稱 | 類型 | 用途 |
 | --- | --- | --- |
 | `CLOUDFLARE_ACCOUNT_ID` | Variable | 要部署到的 Cloudflare 帳號；設定後才會部署入口網站 |
-| `CLOUDFLARE_API_TOKEN` | Secret | 以「Edit Cloudflare Workers」範本建立的 API Token |
-| `API_ORIGIN` | Variable | FastAPI 的位址，見〈連接 Worker 與 FastAPI〉 |
+| `CLOUDFLARE_API_TOKEN` | Secret | 以「Edit Cloudflare Workers」範本建立的 API Token，並加上 Connectivity Directory 的 Bind 權限 |
+| `API_ORIGIN` | Variable | 固定為 `http://app:8000`，見〈連接 Worker 與 FastAPI〉 |
 | `EDGE_SHARED_SECRET` | Secret | 與伺服器 `secrets/edge_secret` 相同的值 |
 | `SUPABASE_MIGRATIONS_ENABLED` | Variable | 設為 `true` 才會自動套用遷移 |
 | `SUPABASE_DB_URL` | Secret | 維護帳號的 PostgreSQL 連線字串 |
@@ -88,6 +90,18 @@ npx supabase@3.0.0 db push --remote="$SUPABASE_DB_URL" --dry-run   # 應顯示 R
 
 ## 部署 FastAPI
 
+FastAPI 跑在 Ubuntu 主機上，以 Compose 啟動。主機的 Tailscale 位址不寫進這個公開 repo。
+
+### 維護連線
+
+SSH 只對 Tailscale 開放，不對區網或網際網路開放：
+
+```bash
+sudo apt install -y openssh-server
+sudo systemctl enable --now ssh
+sudo ufw allow in on tailscale0 to any port 22 proto tcp
+```
+
 ### Ubuntu 網路條件
 
 保持既有入站限制。Compose 未發布主機連接埠，`cloudflared` 和 FastAPI 透過專用 Docker 網路通訊。
@@ -133,18 +147,18 @@ docker compose --env-file .env.production ps
 
 ### 連接 Worker 與 FastAPI
 
-建立 remotely managed Tunnel，再擇一連接：
+使用 Workers VPC，不要在 Tunnel 發布公開 hostname，FastAPI 才不會有任何公開網址。Workers VPC 目前為 beta。
 
-**A. Workers VPC（不需要網域，後端沒有公開網址）**：Workers VPC 目前為 beta。
+1. 建立 remotely managed Tunnel，把 token 存入 `secrets/cloudflared_token`。
+2. 建立 VPC service。`app` 是 Compose 裡的服務名稱，由 `cloudflared` 容器解析：
 
-```bash
-npx wrangler@4.119.0 vpc service create pjqaqc-api \
-  --type http --tunnel-id <tunnel-id> --hostname app --http-port 8000
-```
+   ```bash
+   npx wrangler@4.119.0 vpc service create pjqaqc-api \
+     --type http --tunnel-id <tunnel-id> --hostname app --http-port 8000
+   ```
 
-把回傳的 service id 填入 `cloudflare/wrangler.toml` 的 `[[vpc_services]]`（取消註解），並設定 `API_ORIGIN=http://app:8000`。
-
-**B. Tunnel 公開網址（需要 Cloudflare 上的網域）**：在 Tunnel 發布一個 hostname，服務填 `http://app:8000`，並設定 `API_ORIGIN=https://<該 hostname>`。此網址雖然公開，但沒有 `EDGE_SHARED_SECRET` 的請求一律回 404。
+3. 把回傳的 service id 填入 `cloudflare/wrangler.toml` 的 `[[vpc_services]]`（取消註解）。
+4. 設定 GitHub 變數 `API_ORIGIN=http://app:8000`。
 
 ## 驗收
 
@@ -152,7 +166,8 @@ npx wrangler@4.119.0 vpc service create pjqaqc-api \
 - 以未授權的 Supabase 帳號登入，應被拒絕。
 - 以編輯者帳號登入：右上角顯示編輯者模式與帳號，看到的是正式資料。用核准的測試資料修改一個儀器參數並登錄一筆品管結果，重新整理後資料仍在。
 - 登出後回到 DEMO。
-- 在 Ubuntu 驗證 SSH 經核准的維護路徑可達，FastAPI 容器沒有發布主機埠。
+- 從 Tailscale 上的另一台裝置確認 SSH 可連，但 FastAPI 連不到：`nc -vz -w 5 <主機的 Tailscale 位址> 8000` 應失敗。
+- 在 Ubuntu 執行 `docker compose ps`，確認 FastAPI 容器沒有發布主機埠。
 - 核對 Tunnel 狀態、Supabase Auth 登入紀錄及資料庫用量。
 
 ## 維運注意事項

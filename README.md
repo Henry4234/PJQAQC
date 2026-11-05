@@ -32,7 +32,7 @@
 測試：
 
 ```bash
-node --test tests/worker.test.mjs tests/demo-data.test.mjs
+node --test tests/worker.test.mjs tests/demo-data.test.mjs tests/audit-tables.test.mjs
 cd backend && uv run python test_production.py
 ```
 

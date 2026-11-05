@@ -26,10 +26,11 @@ namespace_id = "1002"
   limit = 300
   period = 60
 
-# 後端的連線設定見 DEPLOYMENT.md。API_ORIGIN 由部署流程帶入，EDGE_SHARED_SECRET 是 Worker secret。
+# FastAPI 沒有公開網址，Worker 經 Workers VPC 進 Tunnel 是唯一入口，見 DEPLOYMENT.md。
+# API_ORIGIN 由部署流程帶入，EDGE_SHARED_SECRET 是 Worker secret。
 # 沒有設定時 DEMO 仍可正常使用，只有編輯者登入會回 503。
 #
-# 若經 Workers VPC 連到 Tunnel（不需網域、後端沒有公開網址），取消註解並填入 service id：
+# 建立 VPC service 後，取消註解並填入 service id：
 # [[vpc_services]]
 # binding = "API_VPC"
 # service_id = "<wrangler vpc service create 回傳的 id>"
