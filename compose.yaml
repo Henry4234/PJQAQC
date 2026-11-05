@@ -1,6 +1,5 @@
 services:
   app:
-    image: ${API_IMAGE:-ghcr.io/henry4234/pjqaqc-api:latest}
     build: .
     restart: unless-stopped
     init: true

@@ -18,7 +18,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Run the Worker and DEMO tests
-        run: node --test tests/worker.test.mjs tests/demo-data.test.mjs tests/audit-tables.test.mjs
+        run: node --test tests/worker.test.mjs tests/demo-data.test.mjs tests/audit-tables.test.mjs tests/private-api.test.mjs
       - name: Check that the page scripts parse
         run: |
           node --check frontend/app.js

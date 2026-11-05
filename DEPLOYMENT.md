@@ -12,7 +12,7 @@
 
 - **流量**：靜態檔不計入 Worker 請求額度。沒有工作階段 cookie 的 `/api/*` 請求在 Worker 就結束，訪客再多也不會碰到 FastAPI 或 Supabase。
 - **帳號**：帳號密碼由 Supabase Auth 管理。FastAPI 驗證密碼後，檢查 `app_metadata.pjqaqc_access`，再簽發 30 分鐘的 HttpOnly cookie。
-- **只能經 Worker 進入**：FastAPI 沒有公開網址，也沒有發布主機連接埠（CI 會檢查），連 Tailscale 也連不到；唯一路徑是 Worker 經 Workers VPC 進 Tunnel。FastAPI 另外要求 `EDGE_SHARED_SECRET`，其他請求一律回 404。
+- **只能經 Worker 進入**：FastAPI 沒有公開網址，只綁在主機的 `127.0.0.1`，區網和 Tailscale 都連不到（`tests/private-api.test.mjs` 會檢查設定）。唯一路徑是 Worker 經 Workers VPC 進 Tunnel。FastAPI 另外要求 Worker 的共用密鑰，其他請求一律回 404。
 - **防護分層**：Worker 擋掉匿名請求與跨站寫入，並對登入與 API 限速；真正的權限檢查在 FastAPI。
 - **稽核紀錄**：`qc_results` 等品管與校正紀錄只能新增。API 沒有修改或刪除的路由，`pjqaqc_app` 只有 `INSERT`、`SELECT` 權限，刪除上層主檔也不會連帶刪除；`tests/audit-tables.test.mjs` 會檢查每個遷移。
 - **只有 DEMO 時**：Worker 未設定後端也能運作，DEMO 正常，只有登入會回 503。可以先上線 DEMO，之後再接後端。
@@ -23,7 +23,6 @@
 | --- | --- | --- |
 | `ci.yml` | 每個 PR 與 `main` | Worker 與 DEMO 測試、Worker 打包檢查、Compose 檢查、映像建置、登入邊界測試 |
 | `deploy-portal.yml` | `main` 的 `frontend/`、`cloudflare/`、`tests/` 變更 | 重跑測試後部署 Worker |
-| `deploy-api.yml` | `main` 的 `backend/`、`Dockerfile` 變更 | 建置、測試映像，再推送到 `ghcr.io/henry4234/pjqaqc-api` |
 | `deploy-database.yml` | `main` 的 `supabase/migrations/` 變更 | 列出並套用待執行的遷移（預設關閉） |
 
 在 GitHub 的 Settings → Secrets and variables → Actions 設定下列項目。尚未設定時，部署工作會略過，不會失敗。
@@ -32,14 +31,12 @@
 | --- | --- | --- |
 | `CLOUDFLARE_ACCOUNT_ID` | Variable | 要部署到的 Cloudflare 帳號；設定後才會部署入口網站 |
 | `CLOUDFLARE_API_TOKEN` | Secret | 以「Edit Cloudflare Workers」範本建立的 API Token，並加上 Connectivity Directory 的 Bind 權限 |
-| `API_ORIGIN` | Variable | 固定為 `http://app:8000`，見〈連接 Worker 與 FastAPI〉 |
-| `EDGE_SHARED_SECRET` | Secret | 與伺服器 `secrets/edge_secret` 相同的值 |
 | `SUPABASE_MIGRATIONS_ENABLED` | Variable | 設為 `true` 才會自動套用遷移 |
 | `SUPABASE_DB_URL` | Secret | 維護帳號的 PostgreSQL 連線字串 |
 
 部署工作都使用 `production` environment。若要在部署前由人工核准，請在 Settings → Environments → production 加上 Required reviewers。
 
-Ubuntu 上的 FastAPI 更新由管理員執行，流程見〈部署 FastAPI〉。CI 只負責產出已測試的映像。
+FastAPI 不會自動部署：CI 通過、合併到 `main` 後，由管理員在主機更新，流程見〈更新與回復〉。
 
 ## Supabase
 
@@ -90,11 +87,11 @@ npx supabase@3.0.0 db push --remote="$SUPABASE_DB_URL" --dry-run   # 應顯示 R
 
 ## 部署 FastAPI
 
-FastAPI 跑在 Ubuntu 主機上，以 Compose 啟動。主機的 Tailscale 位址不寫進這個公開 repo。
+FastAPI 以 systemd 使用者服務跑在 Ubuntu 主機的一般帳號下，只綁 `127.0.0.1`，這個帳號不需要 sudo 或 Docker 權限。主機的 Tailscale 位址不寫進這個公開 repo。
 
 ### 維護連線
 
-SSH 只對 Tailscale 開放，不對區網或網際網路開放：
+SSH 應只對 Tailscale 開放，不對區網或網際網路開放：
 
 ```bash
 sudo apt install -y openssh-server
@@ -104,7 +101,7 @@ sudo ufw allow in on tailscale0 to any port 22 proto tcp
 
 ### Ubuntu 網路條件
 
-保持既有入站限制。Compose 未發布主機連接埠，`cloudflared` 和 FastAPI 透過專用 Docker 網路通訊。
+保持既有入站限制。Tunnel 只由主機向外連線，不需要開放任何入站埠。
 
 | 出站目的 | 用途 |
 | --- | --- |
@@ -112,53 +109,90 @@ sudo ufw allow in on tailscale0 to any port 22 proto tcp
 | `region1.v2.argotunnel.com`、`region2.v2.argotunnel.com` 的 TCP 或 UDP `7844` | Cloudflare Tunnel。若只允許 TCP，使用 HTTP/2 |
 | `tptjijcynzwskfcgkvmx.supabase.co:443` | FastAPI 的 Supabase Auth 電子郵件與密碼驗證 |
 | `aws-0-ap-northeast-1.pooler.supabase.com` TCP `5432` | PJQAQC 的 Session pooler，供 FastAPI 與搬移工具使用 PostgreSQL TLS |
-| `ghcr.io` 與核准的映像來源 HTTPS `443` | 下載映像 |
-
-在 Ubuntu 執行連線檢查，並從實際容器網路再測一次。
+| `github.com` 與 Python 套件來源 HTTPS `443` | 更新程式與相依套件 |
 
 ```bash
 nc -vz -w 5 region1.v2.argotunnel.com 7844
 nc -vz -w 5 region2.v2.argotunnel.com 7844
-nc -vz -w 5 "$SUPABASE_POOLER_HOST" 5432
-curl --silent --show-error --max-time 8 --output /dev/null --write-out '%{http_code}\n' \
-  https://tptjijcynzwskfcgkvmx.supabase.co/auth/v1/health
+nc -vz -w 5 aws-0-ap-northeast-1.pooler.supabase.com 5432
+curl --silent --show-error --max-time 8 --output /dev/null --write-out '%{http_code}
+'   https://tptjijcynzwskfcgkvmx.supabase.co/auth/v1/health
 ```
 
-### 設定與啟動
+### 主機上的配置
 
-在部署目錄複製 `.env.production.sample` 為 `.env.production` 並填入。`PUBLIC_HOSTNAME` 必須等於入口網站的網域。用權限 `0700` 的 `secrets/` 目錄保存下列檔案；檔案需能被各自的非 root 容器程序讀取。
+全部放在 `~/pjqaqc-deployment/`：
+
+| 路徑 | 內容 |
+| --- | --- |
+| `code/` | 這個 repo 的 checkout |
+| `app.env` | `PUBLIC_HOSTNAME`、`SUPABASE_URL`、`SUPABASE_PUBLISHABLE_KEY`，範本為 `.env.production.sample` |
+| `bin/uv` | Python 套件工具 |
+| `secrets/` | 目錄權限 `0700`，檔案權限 `0600`，內容如下 |
 
 | 檔案 | 內容 |
 | --- | --- |
-| `secrets/database_url` | `pjqaqc_app` 的 DSN |
+| `secrets/database_url` | `pjqaqc_app` 的 DSN，`sslrootcert` 指向下面的 `supabase_ca` |
 | `secrets/supabase_ca` | 從 Supabase 下載的公開憑證 |
-| `secrets/cloudflared_token` | Tunnel token |
 | `secrets/session_key` | `openssl rand -hex 32 > secrets/session_key` |
-| `secrets/edge_secret` | `openssl rand -hex 32 > secrets/edge_secret`，同一個值填入 GitHub 的 `EDGE_SHARED_SECRET` |
+| `secrets/edge_secret` | `openssl rand -hex 32 > secrets/edge_secret` |
+| `secrets/cloudflared_token` | Tunnel token，見〈連接 Worker 與 FastAPI〉 |
+
+### 首次安裝
 
 ```bash
-docker compose --env-file .env.production config --quiet
-docker compose --env-file .env.production pull app
-docker compose --env-file .env.production up -d
-docker compose --env-file .env.production ps
+loginctl enable-linger "$USER"   # 讓服務在登出後繼續執行，可能需要 sudo
+cd ~/pjqaqc-deployment
+git clone https://github.com/Henry4234/PJQAQC.git code
+(cd code/backend && ../../bin/uv sync --locked --no-dev)
+install -m 644 code/deploy/*.service ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now pjqaqc-api pjqaqc-tunnel
 ```
 
-更新時重複 `pull` 與 `up -d`。在 `.env.production` 指定 `API_IMAGE` 為前一個 commit SHA 即可回復。正式環境預設關閉 AI 判讀。
+### 更新與回復
+
+```bash
+cd ~/pjqaqc-deployment/code
+git fetch origin
+git checkout --detach origin/main
+(cd backend && ../../../bin/uv sync --locked --no-dev)
+systemctl --user restart pjqaqc-api
+```
+
+回復時把 `origin/main` 換成前一個 commit。服務檔有變更時，要再執行一次 `install` 與 `daemon-reload`。正式環境預設關閉 AI 判讀。
 
 ### 連接 Worker 與 FastAPI
 
-使用 Workers VPC，不要在 Tunnel 發布公開 hostname，FastAPI 才不會有任何公開網址。Workers VPC 目前為 beta。
+使用 Workers VPC，不要在 Tunnel 發布公開 hostname，FastAPI 才不會有任何公開網址。Workers VPC 目前為 beta。以下指令在已登入 Cloudflare 的管理機器執行。
 
-1. 建立 remotely managed Tunnel，把 token 存入 `secrets/cloudflared_token`。
-2. 建立 VPC service。`app` 是 Compose 裡的服務名稱，由 `cloudflared` 容器解析：
+1. 建立 Tunnel，並把 token 存入主機的 `secrets/cloudflared_token`。Token 可由 Cloudflare API 的 `GET /accounts/<account-id>/cfd_tunnel/<tunnel-id>/token` 取得。
 
    ```bash
-   npx wrangler@4.119.0 vpc service create pjqaqc-api \
-     --type http --tunnel-id <tunnel-id> --hostname app --http-port 8000
+   npx wrangler@4.119.0 tunnel create pjqaqc-api
    ```
 
-3. 把回傳的 service id 填入 `cloudflare/wrangler.toml` 的 `[[vpc_services]]`（取消註解）。
-4. 設定 GitHub 變數 `API_ORIGIN=http://app:8000`。
+2. 建立只指向 FastAPI 的 VPC service，並把回傳的 id 填入 `cloudflare/wrangler.toml` 的 `[[vpc_services]]`。
+
+   ```bash
+   npx wrangler@4.119.0 vpc service create pjqaqc-api      --type http --tunnel-id <tunnel-id> --ipv4 127.0.0.1 --http-port 18741
+   ```
+
+3. 部署 Worker，再設定與主機相同的共用密鑰。密鑰會保留在 Cloudflare，之後部署不用重設。
+
+   ```bash
+   npx wrangler@4.119.0 deploy --config cloudflare/wrangler.toml
+   ssh <主機> 'tr -d "
+" < ~/pjqaqc-deployment/secrets/edge_secret'      | npx wrangler@4.119.0 secret put EDGE_SHARED_SECRET --config cloudflare/wrangler.toml
+   ```
+
+### 改用 Docker（選用）
+
+`compose.yaml` 提供更強的隔離（唯讀檔案系統、移除 capabilities、專用非 root 使用者），CI 也會建置並測試映像。代價是帳號要加入 `docker` 群組，這個權限近似 root。要切換時：
+
+1. 複製 `app.env` 為 `.env.production`，把上述 secrets 放在 repo 的 `secrets/`，並讓容器程序讀得到。
+2. 把 VPC service 改為 `--hostname app --http-port 8000`。
+3. 停用兩個使用者服務，再執行 `docker compose --env-file .env.production up -d --build`。
 
 ## 驗收
 
@@ -166,8 +200,8 @@ docker compose --env-file .env.production ps
 - 以未授權的 Supabase 帳號登入，應被拒絕。
 - 以編輯者帳號登入：右上角顯示編輯者模式與帳號，看到的是正式資料。用核准的測試資料修改一個儀器參數並登錄一筆品管結果，重新整理後資料仍在。
 - 登出後回到 DEMO。
-- 從 Tailscale 上的另一台裝置確認 SSH 可連，但 FastAPI 連不到：`nc -vz -w 5 <主機的 Tailscale 位址> 8000` 應失敗。
-- 在 Ubuntu 執行 `docker compose ps`，確認 FastAPI 容器沒有發布主機埠。
+- 從 Tailscale 上的另一台裝置確認 SSH 可連，但 FastAPI 連不到：`nc -vz -w 5 <主機的 Tailscale 位址> 18741` 應失敗。
+- 在主機執行 `ss -tln | grep 18741`，應只看到 `127.0.0.1`。
 - 核對 Tunnel 狀態、Supabase Auth 登入紀錄及資料庫用量。
 
 ## 維運注意事項
