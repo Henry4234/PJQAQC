@@ -1,0 +1,43 @@
+name: Check FastAPI deployment
+
+on:
+  pull_request:
+    paths:
+      - 'backend/**'
+      - 'frontend/**'
+      - 'supabase/**'
+      - '.dockerignore'
+      - 'Dockerfile'
+      - 'compose.yaml'
+      - '.github/workflows/backend.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Validate Compose
+        env:
+          PUBLIC_HOSTNAME: qaqc.example.com
+          SUPABASE_URL: https://aaaaaaaaaaaaaaaaaaaa.supabase.co
+          SUPABASE_PUBLISHABLE_KEY: sb_publishable_test
+        run: docker compose config --quiet
+      - name: Build and check the FastAPI image
+        run: |
+          docker build -t pjqaqc:ci .
+          docker run --rm pjqaqc:ci /app/backend/.venv/bin/python -c \
+            'from main import app; assert "/api/ready" in app.openapi()["paths"]'
+      - name: Verify the production login boundary
+        run: |
+          docker run --rm -i --network none pjqaqc:ci /app/backend/.venv/bin/python - \
+            < backend/test_production.py
+      - name: Verify the AI data and key boundary
+        run: |
+          docker run --rm -i --network none pjqaqc:ci /app/backend/.venv/bin/python - \
+            < backend/test_ai_interpret.py

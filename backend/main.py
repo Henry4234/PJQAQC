@@ -4,6 +4,7 @@
   main.py     — 讀取類 API、Dashboard、L-J、關聯圖，以及 app 組裝
   register.py — 新增類 API（主檔 / 批號 / 關聯 / 品管執行 / 校正）
   manage.py   — 修改與停用／刪除類 API
+  ai_interpret.py — AI 品管判讀（品管資料 JSON、Claude / OpenAI）
   westgard.py — 純判讀邏輯
 
 核心概念：assay = 儀器 × 檢驗項目 × 檢體別。品管判讀一律綁儀器
@@ -20,8 +21,8 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
 
+import ai_interpret
 import database as db
 import manage
 import register
@@ -615,49 +616,19 @@ def ai_interpret(req: AIInterpretIn):
     if not rows:
         raise HTTPException(status_code=404, detail="此條件下查無品管資料，無法判讀。")
 
-    scope = (
-        f"組別: {req.section_name or '全部'}｜儀器: {req.instrument_serial_number or '全部'}｜"
-        f"項目: {req.item_code or '全部'}｜期間: {req.date_from or '不限'} ~ {req.date_to or '不限'}"
-    )
-    prompt = (
-        f"以下是需要判讀的品管數據（共 {len(rows)} 筆）。\n\n"
-        f"**查詢範圍**：{scope}\n\n{_format_for_ai(rows)}\n\n"
-        "請依指南進行專業判讀並提出矯正建議。"
-    )
 
+@app.get("/api/ready")
+def ready():
     try:
-        import anthropic
-
-        client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-        message = client.messages.create(
-            model=AI_MODEL,
-            max_tokens=8000,
-            thinking={"type": "adaptive"},
-            system=[{"type": "text", "text": _load_guide(),
-                     "cache_control": {"type": "ephemeral"}}],
-            messages=[{"role": "user", "content": prompt}],
-        )
-    except anthropic.APIStatusError as e:
-        raise HTTPException(status_code=502, detail=f"Claude API 錯誤 ({e.status_code}): {e.message}")
-    except anthropic.APIConnectionError:
-        raise HTTPException(status_code=502, detail="無法連線至 Claude API，請檢查網路。")
-    except Exception as e:  # noqa: BLE001
-        raise HTTPException(status_code=500, detail=f"AI 判讀失敗: {e}")
-
-    if message.stop_reason == "refusal":
-        raise HTTPException(status_code=400, detail="模型基於安全考量婉拒此請求。")
-
-    return {
-        "record_count": len(rows),
-        "scope": scope,
-        "model": AI_MODEL,
-        "interpretation": "".join(b.text for b in message.content if b.type == "text"),
-    }
+        db.fetch_one("SELECT 1 FROM lab_sections LIMIT 1")
+    except db.DATABASE_ERRORS:
+        raise HTTPException(status_code=503, detail="資料庫尚未就緒") from None
+    return {"status": "ready"}
 
 
-@app.get("/api/health")
-def health():
-    return {"status": "ok", "version": "3.0.0", "time": datetime.now().isoformat()}
+@app.exception_handler(db.DATA_ERRORS[0])
+async def invalid_database_value(request: Request, exc: Exception):
+    return JSONResponse({"detail": "資料格式或數值範圍不正確"}, status_code=422)
 
 
 @app.get("/api/ready")

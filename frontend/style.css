@@ -410,6 +410,7 @@ tbody tr:hover { background: rgba(56,189,248,.06); }
 }
 @keyframes spin { to { transform: rotate(360deg); } }
 .ai-meta { color: var(--muted); font-size: 12px; margin-bottom: 14px; padding-bottom: 12px; border-bottom: 1px solid var(--border); }
+.ai-warning { color: var(--warn); font-size: 13px; margin-bottom: 12px; }
 .ai-md h1, .ai-md h2, .ai-md h3 { color: var(--text); margin: 18px 0 8px; }
 .ai-md h1 { font-size: 20px; } .ai-md h2 { font-size: 17px; } .ai-md h3 { font-size: 15px; }
 .ai-md p { margin: 8px 0; }
@@ -418,7 +419,7 @@ tbody tr:hover { background: rgba(56,189,248,.06); }
 .ai-md strong { color: var(--text); }
 .ai-md code { background: var(--panel-2); padding: 1px 6px; border-radius: 4px; font-size: 13px; }
 .ai-md table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 13px; }
-.ai-md th, .ai-md td { border: 1px solid var(--border); padding: 6px 10px; text-align: left; }
+.ai-md th, .ai-md td { border: 1px solid var(--border); padding: 6px 10px; text-align: left; white-space: normal; overflow-wrap: anywhere; vertical-align: top; }
 .ai-md th { background: var(--panel-2); }
 .ai-md hr { border: none; border-top: 1px solid var(--border); margin: 16px 0; }
 
@@ -664,6 +665,10 @@ form.mode-pane.active { display: grid; }
 .modal-foot { justify-content: flex-end; border-top: 1px solid var(--border); }
 .modal-foot .add-msg { margin-right: auto; }
 .modal-body { overflow-y: auto; border: none; border-radius: 0; margin: 0; }
+.modal-backdrop.notice .modal { width: min(460px, 100%); }
+.modal-backdrop.notice #modal-cancel { display: none; }
+.modal-backdrop.notice p { margin: 0; line-height: 1.6; }
+.modal-backdrop.notice .modal-note { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
 
 /* JSON 匯入區塊 */
 .json-import { margin-top: 18px; }

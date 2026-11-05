@@ -377,9 +377,10 @@
         <div class="filter-bar">
           <div class="filter-item"><label>組別</label><select id="ai-section"></select></div>
           <div class="filter-item"><label>儀器</label><select id="ai-instrument"></select></div>
-          <div class="filter-item"><label>項目</label><input id="ai-item" placeholder="留空為全部" /></div>
+          <div class="filter-item"><label>項目</label><select id="ai-item"><option value="">全部項目</option></select></div>
           <div class="filter-item"><label>起始日期</label><input type="date" id="ai-from" /></div>
           <div class="filter-item"><label>結束日期</label><input type="date" id="ai-to" /></div>
+          <div class="filter-item"><label>AI 模型</label><select id="ai-provider"></select></div>
         </div>
         <div class="ai-actions"><button id="ai-run" class="btn">AI 判讀</button></div>
         <div id="ai-result" class="ai-result"></div>
