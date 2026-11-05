@@ -2,17 +2,38 @@
 
 實驗室品質管制（Laboratory Quality Control）管理系統，含 Westgard 多規則自動判讀。
 
-- [匿名展示](https://henry4234.github.io/PJQAQC/) 使用合成資料，可查看品管趨勢與判讀。
-- [Ubuntu 與 Supabase 上線手冊](DEPLOYMENT.md) 說明正式站部署、搬移與驗收。
+[上線手冊](DEPLOYMENT.md)說明部署、CI/CD、資料搬移與驗收。
 
-- **前端**：原生 HTML / CSS / JavaScript 網頁（儀表板、紀錄查詢、新增品管）
-- **後端**：Python FastAPI（API + 提供前端靜態檔）
-- **資料庫**：本機可用 MariaDB，正式環境支援 Supabase PostgreSQL v3。
+- **前端**：原生 HTML / CSS / JavaScript 網頁，正式環境由 Cloudflare Worker 提供
+- **後端**：Python FastAPI
+- **資料庫**：正式環境為 Supabase PostgreSQL，本機開發可用 MariaDB
+- **帳號**：Supabase Auth
+
+## 兩種模式
+
+| 模式 | 進入方式 | 資料 | 可編輯 |
+| --- | --- | --- | --- |
+| DEMO | 未登入時的預設畫面 | 瀏覽器內的合成資料（`frontend/demo-data.js`），不連後端與資料庫 | 否 |
+| 編輯者 | 由右上角登入 Supabase 帳號 | 正式資料庫 | 是 |
+
+本機開發（`APP_ENV` 不是 `production`）不需登入，直接進入編輯者模式。
 
 ## 架構
 
 ```
-瀏覽器 (frontend/)  ──fetch /api/*──►  FastAPI (backend/main.py)  ──►  MySQL (NAS)
+正式環境
+  訪客    瀏覽器 ──► Cloudflare Worker（靜態檔，DEMO 在瀏覽器內執行）
+  編輯者  瀏覽器 ──► Cloudflare Worker ──► Tunnel ──► FastAPI ──► Supabase
+
+本機開發
+  瀏覽器 ──fetch /api/*──► FastAPI（同時提供前端靜態檔）──► MariaDB
+```
+
+測試：
+
+```bash
+node --test tests/worker.test.mjs tests/demo-data.test.mjs
+cd backend && uv run python test_production.py
 ```
 
 ## 目錄結構
@@ -31,7 +52,12 @@ PJQAQC/
 ├── frontend/
 │   ├── index.html
 │   ├── style.css
-│   └── app.js
+│   ├── app.js
+│   ├── demo-data.js       # DEMO 模式的合成資料與模擬 API
+│   └── _headers           # 正式環境的安全標頭（Cloudflare）
+├── cloudflare/            # 入口網站 Worker
+├── supabase/migrations/   # 正式資料庫遷移
+├── tests/                 # Worker 與 DEMO 測試
 └── dummy_qcrecord.json    # 原始參考資料
 ```
 
