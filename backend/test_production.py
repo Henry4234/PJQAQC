@@ -32,7 +32,8 @@ def check_login():
 
         assert client.get("/").headers["location"] == "/login"
         assert client.get("/login").status_code == 200
-        for path in ("/api/health", "/api/ready", "/api/instruments"):
+        for path in ("/api/health", "/api/ready", "/api/instruments", "/api/ai-providers",
+                     "/api/ai-qc-data?date_from=2026-01-01"):
             assert client.get(path).status_code == 401
         assert client.post("/login", data=FORM).status_code == 403
         assert client.get("/login", headers={"Host": "other.example.com"}).status_code == 404
@@ -59,6 +60,7 @@ def check_login():
         assert client.get("/docs").status_code == 404
         assert client.post("/api/sections", json={}).status_code == 403
         assert client.post("/api/ai-interpret", json={}, headers=ORIGIN_HEADER).status_code == 503
+        assert client.get("/api/ai-providers").json()["enabled"] is False
         assert client.post("/logout", headers=ORIGIN_HEADER).status_code == 303
         assert client.get("/api/health").status_code == 401
 

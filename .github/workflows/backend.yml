@@ -37,3 +37,7 @@ jobs:
         run: |
           docker run --rm -i --network none pjqaqc:ci /app/backend/.venv/bin/python - \
             < backend/test_production.py
+      - name: Verify the AI data and key boundary
+        run: |
+          docker run --rm -i --network none pjqaqc:ci /app/backend/.venv/bin/python - \
+            < backend/test_ai_interpret.py

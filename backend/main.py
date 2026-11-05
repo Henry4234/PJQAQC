@@ -4,6 +4,7 @@
   main.py     — 讀取類 API、Dashboard、L-J、關聯圖，以及 app 組裝
   register.py — 新增類 API（主檔 / 批號 / 關聯 / 品管執行 / 校正）
   manage.py   — 修改與停用／刪除類 API
+  ai_interpret.py — AI 品管判讀（品管資料 JSON、Claude / OpenAI）
   westgard.py — 純判讀邏輯
 
 核心概念：assay = 儀器 × 檢驗項目 × 檢體別。品管判讀一律綁儀器
@@ -20,8 +21,8 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
 
+import ai_interpret
 import database as db
 import manage
 import register
@@ -48,13 +49,7 @@ else:
 
 app.include_router(register.router)
 app.include_router(manage.router)
-
-ANTHROPIC_API_KEY = (
-    os.environ.get("ANTHROPIC_API_KEY", "")
-    if not PRODUCTION or os.environ.get("ENABLE_AI_INTERPRET") == "1" else ""
-)
-AI_MODEL = os.environ.get("AI_MODEL", "claude-opus-4-8")
-GUIDE_PATH = Path(__file__).resolve().parent / "westgard_guide.md"
+app.include_router(ai_interpret.router)
 
 
 def _today() -> str:
@@ -555,98 +550,6 @@ def er_graph(instrument_serial_number: str = Query(...)):
             "reagent_assay_links": len(reagent_assay),
             "qc_assay_links": len(qc_assay),
         },
-    }
-
-
-# ============================ AI 判讀 ============================ #
-class AIInterpretIn(BaseModel):
-    section_name: str | None = None
-    instrument_serial_number: str | None = None
-    item_code: str | None = None
-    date_from: str | None = None
-    date_to: str | None = None
-
-
-def _load_guide() -> str:
-    try:
-        return GUIDE_PATH.read_text(encoding="utf-8")
-    except FileNotFoundError:
-        return "你是一位醫學檢驗品保專家，請依 Westgard 多規則判讀品管數據，並以繁體中文回覆。"
-
-
-def _format_for_ai(rows: list[dict]) -> str:
-    header = (
-        "| 時間 | 儀器 | 項目 | 檢體 | 品管液 | 濃度 | 批號 | 結果 | 單位 | Mean | SD | Z | 狀態 | Westgard |\n"
-        "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|\n"
-    )
-    lines = []
-    for r in rows:
-        flags = r.get("westgard_flags")
-        flags = ", ".join(flags) if isinstance(flags, list) else (flags or "-")
-        lines.append(
-            f"| {r['run_at']} | {r['instrument_name']} | {r['item_code']} | {r['specimen_code']} | "
-            f"{r['qc_product_name']} | {r['qc_level']} | {r['qc_lot_number']} | "
-            f"{r['result_value']} | {r.get('unit_snapshot') or ''} | "
-            f"{r.get('target_mean_snapshot') or ''} | {r.get('target_sd_snapshot') or ''} | "
-            f"{r.get('z_score') or ''} | {r['result_status']} | {flags} |"
-        )
-    return header + "\n".join(lines)
-
-
-@app.post("/api/ai-interpret", summary="AI 品管判讀")
-def ai_interpret(req: AIInterpretIn):
-    if PRODUCTION and not ANTHROPIC_API_KEY:
-        raise HTTPException(status_code=503, detail="正式環境尚未啟用 AI 判讀。")
-    if not ANTHROPIC_API_KEY:
-        raise HTTPException(
-            status_code=400,
-            detail="尚未設定 ANTHROPIC_API_KEY，請於 backend/.env 填入後重啟伺服器。",
-        )
-    rows = list_qc_results(
-        date_from=req.date_from, date_to=req.date_to, section_name=req.section_name,
-        instrument_serial_number=req.instrument_serial_number, item_code=req.item_code,
-        specimen_code=None, result_status=None, limit=1000,
-    )
-    if not rows:
-        raise HTTPException(status_code=404, detail="此條件下查無品管資料，無法判讀。")
-
-    scope = (
-        f"組別: {req.section_name or '全部'}｜儀器: {req.instrument_serial_number or '全部'}｜"
-        f"項目: {req.item_code or '全部'}｜期間: {req.date_from or '不限'} ~ {req.date_to or '不限'}"
-    )
-    prompt = (
-        f"以下是需要判讀的品管數據（共 {len(rows)} 筆）。\n\n"
-        f"**查詢範圍**：{scope}\n\n{_format_for_ai(rows)}\n\n"
-        "請依指南進行專業判讀並提出矯正建議。"
-    )
-
-    try:
-        import anthropic
-
-        client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-        message = client.messages.create(
-            model=AI_MODEL,
-            max_tokens=8000,
-            thinking={"type": "adaptive"},
-            system=[{"type": "text", "text": _load_guide(),
-                     "cache_control": {"type": "ephemeral"}}],
-            messages=[{"role": "user", "content": prompt}],
-        )
-    except anthropic.APIStatusError as e:
-        raise HTTPException(status_code=502, detail=f"Claude API 錯誤 ({e.status_code}): {e.message}")
-    except anthropic.APIConnectionError:
-        raise HTTPException(status_code=502, detail="無法連線至 Claude API，請檢查網路。")
-    except Exception as e:  # noqa: BLE001
-        raise HTTPException(status_code=500, detail=f"AI 判讀失敗: {e}")
-
-    if message.stop_reason == "refusal":
-        raise HTTPException(status_code=400, detail="模型基於安全考量婉拒此請求。")
-
-    return {
-        "record_count": len(rows),
-        "scope": scope,
-        "model": AI_MODEL,
-        "interpretation": "".join(b.text for b in message.content if b.type == "text"),
     }
 
 
