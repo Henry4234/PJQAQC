@@ -1,0 +1,18 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>shot</title>
+<style>html,body{margin:0}iframe{width:1360px;height:820px;border:0}</style></head>
+<body>
+<iframe id="f" src="/"></iframe>
+<script>
+// 由 ?view= 指定要截圖的分頁；?theme=light 切亮色
+const q = new URLSearchParams(location.search);
+document.getElementById("f").addEventListener("load", async () => {
+  const d = document.getElementById("f").contentDocument;
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  await sleep(2600);
+  if (q.get("theme") === "light") { d.getElementById("theme-toggle").click(); await sleep(400); }
+  const v = q.get("view");
+  if (v) { d.querySelector(`.nav-link[data-view="${v}"]`).click(); await sleep(2200); }
+});
+</script>
+</body></html>

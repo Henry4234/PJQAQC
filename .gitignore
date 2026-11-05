@@ -1,7 +1,12 @@
 # 環境變數與機密（請勿提交真實金鑰）
 .env
 .env.local
+.env.*
+!.env.sample
+!.env.production.sample
 *.env
+secrets/
+.deploy-tools/
 
 # Python 虛擬環境
 venv/

@@ -16,8 +16,9 @@ from datetime import date, datetime
 from pathlib import Path
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -27,19 +28,31 @@ import register
 
 load_dotenv()
 
-app = FastAPI(title="QAQC 品管管理系統 API", version="3.0.0")
+PRODUCTION = os.environ.get("APP_ENV") == "production"
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
+
+app = FastAPI(
+    title="QAQC 品管管理系統 API", version="3.0.0",
+    docs_url=None if PRODUCTION else "/docs",
+    redoc_url=None if PRODUCTION else "/redoc",
+    openapi_url=None if PRODUCTION else "/openapi.json",
 )
+if PRODUCTION:
+    from production import configure_production
+
+    configure_production(app)
+else:
+    app.add_middleware(
+        CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"],
+    )
 
 app.include_router(register.router)
 app.include_router(manage.router)
 
-ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
+ANTHROPIC_API_KEY = (
+    os.environ.get("ANTHROPIC_API_KEY", "")
+    if not PRODUCTION or os.environ.get("ENABLE_AI_INTERPRET") == "1" else ""
+)
 AI_MODEL = os.environ.get("AI_MODEL", "claude-opus-4-8")
 GUIDE_PATH = Path(__file__).resolve().parent / "westgard_guide.md"
 
@@ -87,7 +100,8 @@ def list_test_items(q: str | None = Query(None, description="代碼或名稱關�
         like = f"%{q}%"
         return db.fetch_all(
             "SELECT * FROM test_items WHERE active = TRUE "
-            "AND (item_code LIKE %s OR item_name LIKE %s) ORDER BY item_code",
+            f"AND (item_code {db.CASE_INSENSITIVE_MATCH} %s "
+            f"OR item_name {db.CASE_INSENSITIVE_MATCH} %s) ORDER BY item_code",
             (like, like),
         )
     return db.fetch_all("SELECT * FROM test_items WHERE active = TRUE ORDER BY item_code")
@@ -184,7 +198,8 @@ def _products_with_lots(product_table: str, lot_table: str, fk: str,
     placeholders = ", ".join(["%s"] * len(index))
     lots = db.fetch_all(
         f"SELECT * FROM {lot_table} WHERE {fk} IN ({placeholders}) "
-        f"ORDER BY FIELD(lot_status,'IN_USE','AVAILABLE','QUARANTINE'), {lot_order}",
+        "ORDER BY CASE lot_status WHEN 'IN_USE' THEN 1 WHEN 'AVAILABLE' THEN 2 "
+        f"WHEN 'QUARANTINE' THEN 3 ELSE 0 END, {lot_order}",
         tuple(index.keys()),
     )
     for l in lots:
@@ -318,7 +333,7 @@ def list_qc_results(
         conds.append("run_at >= %s")
         params.append(f"{date_from} 00:00:00")
     if date_to:
-        conds.append("run_at < DATE_ADD(%s, INTERVAL 1 DAY)")
+        conds.append(f"run_at < {db.NEXT_DAY}")
         params.append(date_to)
     if section_name:
         conds.append("section_name = %s")
@@ -360,7 +375,7 @@ def lj_series(
         conds.append("run_at >= %s")
         params.append(f"{date_from} 00:00:00")
     if date_to:
-        conds.append("run_at < DATE_ADD(%s, INTERVAL 1 DAY)")
+        conds.append(f"run_at < {db.NEXT_DAY}")
         params.append(date_to)
     rows = db.fetch_all(
         "SELECT * FROM v_qc_result_detail WHERE " + " AND ".join(conds) + " ORDER BY run_at",
@@ -393,7 +408,7 @@ def dashboard(target_date: str | None = Query(None, description="預設今天"))
     day = target_date or _today()
     rows = db.fetch_all(
         "SELECT * FROM v_qc_result_detail "
-        "WHERE run_at >= %s AND run_at < DATE_ADD(%s, INTERVAL 1 DAY)",
+        f"WHERE run_at >= %s AND run_at < {db.NEXT_DAY}",
         (f"{day} 00:00:00", day),
     )
 
@@ -580,6 +595,8 @@ def _format_for_ai(rows: list[dict]) -> str:
 
 @app.post("/api/ai-interpret", summary="AI 品管判讀")
 def ai_interpret(req: AIInterpretIn):
+    if PRODUCTION and not ANTHROPIC_API_KEY:
+        raise HTTPException(status_code=503, detail="正式環境尚未啟用 AI 判讀。")
     if not ANTHROPIC_API_KEY:
         raise HTTPException(
             status_code=400,
@@ -636,6 +653,20 @@ def ai_interpret(req: AIInterpretIn):
 @app.get("/api/health")
 def health():
     return {"status": "ok", "version": "3.0.0", "time": datetime.now().isoformat()}
+
+
+@app.get("/api/ready")
+def ready():
+    try:
+        db.fetch_one("SELECT 1 FROM lab_sections LIMIT 1")
+    except db.DATABASE_ERRORS:
+        raise HTTPException(status_code=503, detail="資料庫尚未就緒") from None
+    return {"status": "ready"}
+
+
+@app.exception_handler(db.DATA_ERRORS[0])
+async def invalid_database_value(request: Request, exc: Exception):
+    return JSONResponse({"detail": "資料格式或數值範圍不正確"}, status_code=422)
 
 
 # ----------------------------- 靜態前端 ----------------------------- #
