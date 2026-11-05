@@ -27,11 +27,13 @@ async function api(path, opts) {
   try { body = text ? JSON.parse(text) : null; } catch { body = text; }
   if (!res.ok) {
     const detail = body && body.detail;
-    throw new Error(
+    const error = new Error(
       typeof detail === "string" ? detail
         : Array.isArray(detail) ? detail.map((d) => `${(d.loc || []).slice(-1)}: ${d.msg}`).join("；")
-          : (text || res.statusText)
+          : ((detail && detail.message) || text || res.statusText)
     );
+    error.detail = detail;
+    throw error;
   }
   return body;
 }
@@ -194,7 +196,7 @@ const Modal = (() => {
   const form = document.getElementById("modal-form");
   let current = null;
 
-  function close() { back.classList.remove("open"); current = null; }
+  function close() { back.classList.remove("open", "notice"); current = null; }
 
   function fieldHtml(f, val) {
     const id = `mf-${f.name}`;
@@ -231,6 +233,16 @@ const Modal = (() => {
       msRender(`mf-${f.name}`, f.options || [], f.emptyText || "（無可選項目）", values[f.name] || []));
     const first = form.querySelector("input:not([type=checkbox]), select");
     if (first) setTimeout(() => first.focus(), 30);
+  }
+
+  // 純提示：只有訊息與「確定」。對話框已開啟時改用 toast，以免蓋掉使用者正在填寫的表單
+  function notice({ title, message, detail }) {
+    if (back.classList.contains("open")) { toast(message, "err"); return; }
+    open({ title, fields: [], saveLabel: "確定", onSave: () => {} });
+    back.classList.add("notice");
+    form.innerHTML = `<p class="full">${esc(message)}</p>` +
+      (detail ? `<p class="full modal-note">${esc(detail)}</p>` : "");
+    document.getElementById("modal-save").focus();
   }
 
   function collect() {
@@ -270,7 +282,7 @@ const Modal = (() => {
     if (e.key === "Escape" && back.classList.contains("open")) close();
   });
 
-  return { open, close };
+  return { open, close, notice };
 })();
 
 /* ==================================================== 可檢索下拉複選 */
@@ -1663,21 +1675,87 @@ if (window.ResizeObserver)
   new ResizeObserver(() => { if (ER) drawEREdges(); }).observe(document.getElementById("er-canvas"));
 
 /* ==================================================== AI 判讀 */
+// 項目是「組別 → 儀器」的次級選單；同一項目可能跨檢體或跨儀器，選單只列一次
+let aiItemsRequest = 0;
+async function loadAIItems() {
+  const sel = document.getElementById("ai-item");
+  const request = ++aiItemsRequest;
+  const params = new URLSearchParams({ include_inactive: "true" });
+  const section = document.getElementById("ai-section").value;
+  const serial = document.getElementById("ai-instrument").value;
+  if (section) params.set("section_name", section);
+  if (serial) params.set("instrument_serial_number", serial);
+  let assays = [];
+  try {
+    assays = await api("/api/assays?" + params);
+  } catch (e) {
+    toast("項目載入失敗：" + e.message, "err");
+  }
+  if (request !== aiItemsRequest) return; // 已切換條件，忽略較舊的回應
+  const items = new Map(assays.map((a) => [a.item_code, a.item_name]));
+  const prev = sel.value;
+  sel.innerHTML = `<option value="">全部項目</option>` +
+    [...items].sort(([a], [b]) => a.localeCompare(b)).map(([code, name]) =>
+      `<option value="${esc(code)}">${esc(code)}${name ? ` · ${esc(name)}` : ""}</option>`).join("");
+  if (items.has(prev)) sel.value = prev;
+}
+document.getElementById("ai-section").addEventListener("change", loadAIItems);
+document.getElementById("ai-instrument").addEventListener("change", loadAIItems);
+
+async function loadAIProviders() {
+  const sel = document.getElementById("ai-provider");
+  const btn = document.getElementById("ai-run");
+  const box = document.getElementById("ai-result");
+  const unavailable = (message) => {
+    sel.innerHTML = `<option value="">無法使用</option>`;
+    sel.disabled = true;
+    btn.disabled = true;
+    box.innerHTML = `<div class="placeholder">${esc(message)}</div>`;
+  };
+  let info;
+  try {
+    info = await api("/api/ai-providers");
+  } catch (e) {
+    unavailable(e.message);
+    return;
+  }
+  if (!info.enabled) { unavailable("此環境尚未啟用 AI 判讀。"); return; }
+  if (!info.providers.some((p) => p.configured)) {
+    unavailable("尚未設定 AI 金鑰。請依 README「API 金鑰設定」在 backend/.env 填入您自己的金鑰，然後重啟伺服器。");
+    return;
+  }
+  sel.innerHTML = info.providers.map((p) => p.configured
+    ? `<option value="${esc(p.id)}">${esc(p.label)} · ${esc(p.model)}</option>`
+    : `<option value="${esc(p.id)}" disabled>${esc(p.label)}（未設定金鑰）</option>`).join("");
+  sel.value = info.providers.find((p) => p.configured).id;
+}
+
 document.getElementById("ai-run").addEventListener("click", async () => {
   const btn = document.getElementById("ai-run");
   const box = document.getElementById("ai-result");
   btn.disabled = true;
-  box.innerHTML = `<div class="spinner-wrap"><span class="ai-spinner"></span>AI 判讀中，請稍候…</div>`;
+  box.innerHTML = `<div class="spinner-wrap"><span class="ai-spinner"></span>AI 判讀中，可能需要數分鐘，請稍候…</div>`;
   try {
     const g = (id) => document.getElementById(id).value || null;
     const r = await post("/api/ai-interpret", {
+      provider: g("ai-provider"),
       section_name: g("ai-section"), instrument_serial_number: g("ai-instrument"),
       item_code: g("ai-item"), date_from: g("ai-from"), date_to: g("ai-to"),
     });
+    const warnings = [
+      r.truncated && `資料超過 ${r.max_records} 筆，本次只判讀最新的 ${r.max_records} 筆，請縮小範圍以涵蓋完整期間。`,
+      r.incomplete && "AI 回覆達到長度上限而被截斷，內容可能不完整，請縮小範圍後再試。",
+    ].filter(Boolean);
     box.innerHTML = `<div class="ai-meta">判讀範圍：${esc(r.scope)}｜筆數：${r.record_count}｜模型：${esc(r.model)}</div>
+      ${warnings.map((w) => `<div class="ai-warning">⚠️ ${esc(w)}</div>`).join("")}
       <div class="ai-md">${renderMarkdown(r.interpretation)}</div>`;
   } catch (e) {
-    box.innerHTML = `<div class="placeholder">❌ 判讀失敗：${esc(e.message)}</div>`;
+    if (e.detail && e.detail.code === "NO_QC_DATA") {
+      box.innerHTML = `<div class="placeholder">${esc(e.message)}</div>`;
+      Modal.notice({ title: "無法判讀", message: e.message, detail: e.detail.scope });
+    } else {
+      box.innerHTML = `<div class="placeholder">❌ 判讀失敗：${esc(e.message)}</div>`;
+    }
   } finally { btn.disabled = false; }
 });
 
@@ -1798,13 +1876,13 @@ const GUIDE_STEPS = [
     desc: "儀器校正後按「登錄校正事件」，選擇涵蓋的檢驗設定與使用的校正液。",
     tips: ["所選項目必須屬於此儀器，且已關聯該校正液產品（步驟 8）。"] },
   { noCard: true, phase: 5, title: "儀表板", sub: "當日統計", view: "dashboard", x: 590, y: 662, w: 160 },
-  { noCard: true, phase: 5, title: "AI 判讀", sub: "Claude 分析建議", view: "ai", x: 790, y: 662, w: 150 },
+  { noCard: true, phase: 5, title: "AI 判讀", sub: "AI 分析建議", view: "ai", x: 790, y: 662, w: 150 },
   { noNode: true, phase: 5, title: "檢視與分析", view: "dashboard", path: "儀表板 / 品管作業 / AI 判讀",
     desc: "登錄後可在以下頁面檢視結果：",
     tips: ["儀表板：當日品管筆數、PASS / WARNING / FAIL、違規明細與通過率。",
            "品管紀錄查詢：依日期、儀器、項目、狀態篩選歷史紀錄。",
            "L-J Chart：以 Mean ±1 / 2 / 3SD 繪製 Levey-Jennings 趨勢圖。",
-           "AI 判讀：由 Claude 依 Westgard 規則分析可能成因並給出矯正建議（後端需設定 ANTHROPIC_API_KEY）。",
+           "AI 判讀：由 Claude 或 OpenAI 依 Westgard 規則分析可能成因並給出矯正建議（後端需在 backend/.env 設定金鑰）。",
            "主檔關聯圖：檢查某台儀器的試劑、品管液與檢驗設定是否都已串好。"] },
 ];
 
@@ -1910,6 +1988,7 @@ Object.assign(VIEW_INIT, {
   "specimen-types": (first) => { if (first) loadSpecimens(); },
   sections: (first) => { if (first) loadSections(); },
   guide: (first) => { if (first) renderGuide(); },
+  ai: (first) => { loadAIItems(); if (first) loadAIProviders(); },
 });
 
 /* ==================================================== 啟動 */

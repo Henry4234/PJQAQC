@@ -1,5 +1,6 @@
 **
 !backend/
+!backend/ai_interpret.py
 !backend/database.py
 !backend/login.html
 !backend/main.py

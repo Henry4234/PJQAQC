@@ -369,9 +369,10 @@
         <div class="filter-bar">
           <div class="filter-item"><label>組別</label><select id="ai-section"></select></div>
           <div class="filter-item"><label>儀器</label><select id="ai-instrument"></select></div>
-          <div class="filter-item"><label>項目</label><input id="ai-item" placeholder="留空為全部" /></div>
+          <div class="filter-item"><label>項目</label><select id="ai-item"><option value="">全部項目</option></select></div>
           <div class="filter-item"><label>起始日期</label><input type="date" id="ai-from" /></div>
           <div class="filter-item"><label>結束日期</label><input type="date" id="ai-to" /></div>
+          <div class="filter-item"><label>AI 模型</label><select id="ai-provider"></select></div>
         </div>
         <div class="ai-actions"><button id="ai-run" class="btn">AI 判讀</button></div>
         <div id="ai-result" class="ai-result"></div>
@@ -411,7 +412,7 @@
             <div><b>產品 ≠ 批號</b>產品是穩定定義，關聯掛在產品上；換批號只需新增批號，關聯不用動。</div>
             <div><b>目標值版本化</b>Mean / SD 不可直接修改，平測會建立新版本並保留舊版，歷史判讀永遠可重現。</div>
           </div>
-          <p class="guide-stack">技術架構：瀏覽器（frontend/）→ FastAPI（backend/）→ MySQL；「AI 判讀」另外連線 Anthropic Claude。</p>
+          <p class="guide-stack">技術架構：瀏覽器（frontend/）→ FastAPI（backend/）→ MySQL；「AI 判讀」另外連線 Claude 或 OpenAI。</p>
         </div>
 
         <div class="panel guide-block">
