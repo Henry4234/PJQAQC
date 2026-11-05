@@ -17,8 +17,8 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
-      - name: Run the Worker and DEMO tests
-        run: node --test tests/worker.test.mjs tests/demo-data.test.mjs tests/audit-tables.test.mjs tests/private-api.test.mjs
+      - name: Run the Worker, DEMO and deployment tests
+        run: node --test tests/*.test.mjs
       - name: Check that the page scripts parse
         run: |
           node --check frontend/app.js
@@ -50,3 +50,7 @@ jobs:
         run: |
           docker run --rm -i --network none pjqaqc:ci /app/backend/.venv/bin/python - \
             < backend/test_production.py
+      - name: Verify the AI data and key boundary inside the image, with no network
+        run: |
+          docker run --rm -i --network none pjqaqc:ci /app/backend/.venv/bin/python - \
+            < backend/test_ai_interpret.py

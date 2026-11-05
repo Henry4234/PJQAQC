@@ -1,0 +1,77 @@
+name: Deploy
+
+# main 的 CI 通過後部署：先更新主機上的 FastAPI，成功後才部署 Cloudflare Worker，
+# 前端才不會比後端先用到新的 API。尚未設定的部分會略過，見 DEPLOYMENT.md〈CI/CD〉。
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+env:
+  COMMIT: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+jobs:
+  gate:
+    name: Check the trigger
+    # branches: [main] 只比對分支名稱，fork 用名為 main 的分支開 PR 也會符合，
+    # 所以還要確認這次 CI 是由本 repo 的 push 觸發。
+    if: >-
+      github.ref == 'refs/heads/main' && (
+        github.event_name == 'workflow_dispatch' || (
+          github.event.workflow_run.conclusion == 'success'
+          && github.event.workflow_run.event == 'push'
+          && github.event.workflow_run.head_repository.full_name == github.repository
+        )
+      )
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "Deploying $COMMIT"
+
+  api:
+    name: FastAPI on the host
+    needs: gate
+    if: vars.BACKEND_DEPLOY_ENABLED == 'true'
+    # 這個工作跑在正式主機上，而且 log 是公開的：不使用第三方 action，也不要印出主機資訊。
+    runs-on: pjqaqc-prod
+    environment: production
+    timeout-minutes: 15
+    steps:
+      - name: Update the API to the tested commit
+        run: |
+          cd "$HOME/pjqaqc-deployment/code"
+          git fetch --quiet origin main
+          git show "$COMMIT:deploy/update.sh" > "$RUNNER_TEMP/update.sh"
+          bash "$RUNNER_TEMP/update.sh" "$COMMIT"
+
+  portal:
+    name: Cloudflare Worker
+    needs: [gate, api]
+    # 後端尚未啟用自動部署（skipped）時仍部署 Worker；後端更新失敗就不部署。
+    if: >-
+      !cancelled()
+      && needs.gate.result == 'success'
+      && (needs.api.result == 'success' || needs.api.result == 'skipped')
+      && vars.CLOUDFLARE_ACCOUNT_ID != ''
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      contents: read
+    env:
+      CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ env.COMMIT }}
+          persist-credentials: false
+      # EDGE_SHARED_SECRET 是 Worker secret，已存在 Cloudflare，部署時會保留。
+      - name: Deploy the Worker
+        run: npx --yes wrangler@4.119.0 deploy --config cloudflare/wrangler.toml

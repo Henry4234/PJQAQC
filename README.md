@@ -58,8 +58,9 @@ PJQAQC/
 │   ├── demo-data.js       # DEMO 模式的合成資料與模擬 API
 │   └── _headers           # 正式環境的安全標頭（Cloudflare）
 ├── cloudflare/            # 入口網站 Worker
+├── deploy/                # 主機的 systemd 服務與自動部署腳本
 ├── supabase/migrations/   # 正式資料庫遷移
-├── tests/                 # Worker 與 DEMO 測試
+├── tests/                 # Worker、DEMO 與部署設定測試
 └── dummy_qcrecord.json    # 原始參考資料
 ```
 

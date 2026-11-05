@@ -21,22 +21,27 @@
 
 | 工作流程 | 觸發時機 | 內容 |
 | --- | --- | --- |
-| `ci.yml` | 每個 PR 與 `main` | Worker 與 DEMO 測試、Worker 打包檢查、Compose 檢查、映像建置、登入邊界測試 |
-| `deploy-portal.yml` | `main` 的 `frontend/`、`cloudflare/`、`tests/` 變更 | 重跑測試後部署 Worker |
+| `ci.yml` | 每個 PR 與 `main` | Worker、DEMO 與部署設定測試，Worker 打包檢查，Compose 檢查，映像建置，登入與 AI 邊界測試 |
+| `deploy.yml` | `main` 的 CI 通過後，或手動執行 | 先更新主機上的 FastAPI，成功後才部署 Worker |
 | `deploy-database.yml` | `main` 的 `supabase/migrations/` 變更 | 列出並套用待執行的遷移（預設關閉） |
 
-在 GitHub 的 Settings → Secrets and variables → Actions 設定下列項目。尚未設定時，部署工作會略過，不會失敗。
+設定完成後，合併到 `main` 就不需要人工操作：
+
+- CI 失敗時不會部署。
+- FastAPI 更新後會做健康檢查，沒通過就自動退回原版本，Worker 也不會部署。
+- 這次合併沒有改到 `backend/`、`deploy/` 時，API 不會重啟。
+
+在 GitHub 的 Settings → Secrets and variables → Actions 設定下列項目。尚未設定時，對應的部署工作會略過，不會失敗。
 
 | 名稱 | 類型 | 用途 |
 | --- | --- | --- |
-| `CLOUDFLARE_ACCOUNT_ID` | Variable | 要部署到的 Cloudflare 帳號；設定後才會部署入口網站 |
-| `CLOUDFLARE_API_TOKEN` | Secret | 以「Edit Cloudflare Workers」範本建立的 API Token，並加上 Connectivity Directory 的 Bind 權限 |
+| `CLOUDFLARE_ACCOUNT_ID` | Variable | 要部署到的 Cloudflare 帳號；設定後才會部署 Worker |
+| `CLOUDFLARE_API_TOKEN` | `production` environment 的 Secret | 以「Edit Cloudflare Workers」範本建立的 API Token，並加上 Connectivity Directory 的 Bind 權限 |
+| `BACKEND_DEPLOY_ENABLED` | Variable | 設為 `true` 才會更新主機上的 FastAPI；請在 runner 安裝好後才設定，見〈自動部署〉 |
 | `SUPABASE_MIGRATIONS_ENABLED` | Variable | 設為 `true` 才會自動套用遷移 |
 | `SUPABASE_DB_URL` | Secret | 維護帳號的 PostgreSQL 連線字串 |
 
-部署工作都使用 `production` environment。若要在部署前由人工核准，請在 Settings → Environments → production 加上 Required reviewers。
-
-FastAPI 不會自動部署：CI 通過、合併到 `main` 後，由管理員在主機更新，流程見〈更新與回復〉。
+部署工作都使用 `production` environment。請在 Settings → Environments → production 把 Deployment branches 限制為 `main`。若要在部署前由人工核准，再加上 Required reviewers。
 
 ## Supabase
 
@@ -109,7 +114,7 @@ sudo ufw allow in on tailscale0 to any port 22 proto tcp
 | `region1.v2.argotunnel.com`、`region2.v2.argotunnel.com` 的 TCP 或 UDP `7844` | Cloudflare Tunnel。若只允許 TCP，使用 HTTP/2 |
 | `tptjijcynzwskfcgkvmx.supabase.co:443` | FastAPI 的 Supabase Auth 電子郵件與密碼驗證 |
 | `aws-0-ap-northeast-1.pooler.supabase.com` TCP `5432` | PJQAQC 的 Session pooler，供 FastAPI 與搬移工具使用 PostgreSQL TLS |
-| `github.com` 與 Python 套件來源 HTTPS `443` | 更新程式與相依套件 |
+| `github.com`、GitHub Actions 服務與 Python 套件來源 HTTPS `443` | 更新程式與相依套件，以及 runner 接收部署工作 |
 
 ```bash
 nc -vz -w 5 region1.v2.argotunnel.com 7844
@@ -150,7 +155,56 @@ systemctl --user daemon-reload
 systemctl --user enable --now pjqaqc-api pjqaqc-tunnel
 ```
 
-### 更新與回復
+### 自動部署
+
+`deploy.yml` 的 `api` 工作在這台主機的 GitHub Actions runner 上執行 [`deploy/update.sh`](deploy/update.sh)。runner 只由主機向外連線到 GitHub，不開放任何入站埠，也不需要 sudo 或 Docker 權限。
+
+安裝只需一次，要依序進行：
+
+1. 在已登入 `gh` 的管理機器，先要求所有外部貢獻者的 PR 都要核准才能執行工作流程，再取得 runner 註冊權杖（1 小時內有效）。
+
+   ```bash
+   gh api -X PUT repos/Henry4234/PJQAQC/actions/permissions/fork-pr-contributor-approval \
+     -f approval_policy=all_external_contributors
+   gh api -X POST repos/Henry4234/PJQAQC/actions/runners/registration-token --jq .token
+   ```
+
+2. 在主機安裝 runner，並貼上權杖。若 `config.sh` 回報缺少系統函式庫，請執行 `sudo ~/pjqaqc-deployment/runner/bin/installdependencies.sh` 後再跑一次。
+
+   ```bash
+   cd ~/pjqaqc-deployment/code
+   git fetch origin main
+   git show origin/main:deploy/install-runner.sh > /tmp/install-runner.sh
+   bash /tmp/install-runner.sh
+   ```
+
+3. 確認 runner 上線後，啟用部署，並可立即部署一次。
+
+   ```bash
+   gh api repos/Henry4234/PJQAQC/actions/runners --jq '.runners[] | "\(.name) \(.status)"'
+   gh variable set BACKEND_DEPLOY_ENABLED --body true
+   gh workflow run deploy.yml
+   ```
+
+暫停部署時，把 `BACKEND_DEPLOY_ENABLED` 設為 `false`。主機離線時，`api` 工作和後面的 Worker 部署都會排隊等候 runner；若要先部署前端，也是先設為 `false`，再重新執行工作流程。
+
+#### 這台 runner 的風險與防護
+
+GitHub [不建議公開 repo 使用 self-hosted runner](https://docs.github.com/en/actions/reference/security/secure-use)，因為任何人都能 fork 後自己寫一個指定這台 runner 的 workflow 來開 PR。防護方式如下，其中第一項是主要防線：
+
+- **主機端檢查**：runner 在每個工作開始前執行 [`runner-job-guard.sh`](deploy/runner-job-guard.sh)，不是 `main` 上的 `deploy.yml` 就拒絕，工作不會執行。這支程式裝在 checkout 之外，檢查的 `GITHUB_*` 由 GitHub 提供，workflow 無法覆寫。
+- **專用標籤**：runner 只有 `pjqaqc-prod` 標籤，一般的 `self-hosted` 工作不會排到這裡。
+- **人工核准**：外部貢獻者的 PR 要核准才會執行工作流程。請不要核准會改動 `.github/workflows/` 的外部 PR。
+- **工作內容最少**：`api` 工作不使用第三方 action，也拿不到 GitHub secrets；`tests/deploy.test.mjs` 會檢查這些設定。
+
+仍然存在的風險：
+
+- runner 與 FastAPI 使用同一個帳號，**能合併到 `main` 的人就能在這個帳號下執行程式**，也讀得到 `secrets/`。自動部署本來就有這層信任，因此請維持 `main` 的合併權限與 GitHub 帳號的安全。
+- 公開 repo 的 Actions log 人人可讀。`update.sh` 只在畫面印狀態，細節寫在主機的 `~/pjqaqc-deployment/logs/update.log`。之後修改 `api` 工作時，不要印出主機資訊。
+
+### 手動更新與回復
+
+自動部署失敗時會自己退回。需要手動操作時：
 
 ```bash
 cd ~/pjqaqc-deployment/code
@@ -160,7 +214,7 @@ git checkout --detach origin/main
 systemctl --user restart pjqaqc-api
 ```
 
-回復時把 `origin/main` 換成前一個 commit。服務檔有變更時，要再執行一次 `install` 與 `daemon-reload`。正式環境預設關閉 AI 判讀。
+回復舊版時把 `origin/main` 換成要回復的 commit，並把 `BACKEND_DEPLOY_ENABLED` 設為 `false`，否則下一次合併會再更新到最新版。服務檔有變更時，要再執行一次 `install` 與 `daemon-reload`；`pjqaqc-tunnel` 不會自動重啟。正式環境預設關閉 AI 判讀。
 
 ### 連接 Worker 與 FastAPI
 
@@ -213,6 +267,8 @@ systemctl --user restart pjqaqc-api
 
 ## 參考文件
 
+- [GitHub Actions 的安全使用](https://docs.github.com/en/actions/reference/security/secure-use)
+- [在工作前後執行 runner 腳本](https://docs.github.com/en/actions/how-tos/manage-runners/self-hosted-runners/run-scripts)
 - [Workers Static Assets](https://developers.cloudflare.com/workers/static-assets/)
 - [Workers Rate Limiting](https://developers.cloudflare.com/workers/runtime-apis/bindings/rate-limit/)
 - [Workers VPC](https://developers.cloudflare.com/workers-vpc/)

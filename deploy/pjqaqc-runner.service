@@ -1,0 +1,20 @@
+# GitHub Actions runner，只負責把 main 部署到這台主機。
+# 只由主機向外連線到 GitHub，不開放任何入站埠；每個工作開始前都由 runner-job-guard.sh 檢查來源。
+[Unit]
+Description=PJQAQC GitHub Actions runner
+
+[Service]
+Type=simple
+UMask=0077
+NoNewPrivileges=true
+WorkingDirectory=%h/pjqaqc-deployment/runner
+Environment=ACTIONS_RUNNER_HOOK_JOB_STARTED=%h/pjqaqc-deployment/bin/runner-job-guard.sh
+ExecStart=%h/pjqaqc-deployment/runner/run.sh
+KillMode=process
+KillSignal=SIGTERM
+TimeoutStopSec=5min
+Restart=always
+RestartSec=10s
+
+[Install]
+WantedBy=default.target

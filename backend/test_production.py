@@ -24,13 +24,15 @@ ALLOWED_USER = {"id": "user-1", "email": "editor@example.com", "email_confirmed_
 
 def check_every_data_route_requires_a_session(app, client):
     """A new route must not be able to skip the boundary by accident."""
+    import ai_interpret
     import manage
     import register
 
     data_routes = [
-        route for routes in (app.routes, register.router.routes, manage.router.routes)
+        route for routes in (app.routes, register.router.routes, manage.router.routes, ai_interpret.router.routes)
         for route in routes if isinstance(route, APIRoute) and route.path not in AUTH_PATHS
     ]
+    assert {"/api/ai-interpret", "/api/ai-providers", "/api/ai-qc-data"} <= {r.path for r in data_routes}
     assert len(data_routes) > 40
     for route in data_routes:
         path = re.sub(r"\{[^}]+\}", "1", route.path)
@@ -131,6 +133,7 @@ def check_boundary():
         assert client.post("/api/sections", json={}, headers=EDGE).status_code == 403
         assert client.get("/api/health").status_code == 404
         assert client.post("/api/ai-interpret", json={}, headers=WRITE).status_code == 503
+        assert client.get("/api/ai-providers", headers=EDGE).json()["enabled"] is False
 
         # Logging out ends the session; forged tokens are rejected.
         assert client.post("/api/auth/logout", headers=WRITE).status_code == 200

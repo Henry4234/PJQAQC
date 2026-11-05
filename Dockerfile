@@ -6,8 +6,7 @@ ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 TZ=Asia/Taipei
 COPY backend/pyproject.toml backend/uv.lock ./
 RUN --mount=from=uv,source=/uv,target=/bin/uv uv sync --locked --no-dev --no-install-project
 
-COPY backend/*.py backend/login.html backend/westgard_guide.md ./
-COPY frontend/index.html frontend/style.css frontend/app.js /app/frontend/
+COPY backend/*.py backend/westgard_guide.md ./
 
 RUN groupadd --gid 10001 pjqaqc \
     && useradd --uid 10001 --gid 10001 --no-create-home --shell /usr/sbin/nologin pjqaqc

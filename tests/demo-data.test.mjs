@@ -37,8 +37,10 @@ test("every read endpoint the page calls has demo data", async () => {
     [...appSource.matchAll(/["'`](\/api\/[a-z][a-z/-]*)/g)].map((m) => m[1].replace(/\/$/, "")),
   );
   // Endpoints that exist only behind edit buttons, plus the login API, are not read in DEMO.
+  // The AI page itself requires an editor account, so its endpoints are not read there either.
   const writeOnly = new Set([
-    "/api/auth/session", "/api/auth/login", "/api/auth/logout", "/api/ai-interpret", "/api/qc-runs",
+    "/api/auth/session", "/api/auth/login", "/api/auth/logout",
+    "/api/ai-interpret", "/api/ai-providers", "/api/qc-runs",
     "/api/qc-targets/parallel-test", "/api/instruments/copy-to-backup", "/api/assays/batch",
     "/api/reagent-lots", "/api/calibrator-lots",
   ]);
