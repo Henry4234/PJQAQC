@@ -1,0 +1,19 @@
+# Cloudflare Tunnel。只由主機向外連線；Tunnel 沒有公開 hostname，只有 Workers VPC 綁定能使用。
+[Unit]
+Description=PJQAQC Cloudflare Tunnel
+
+[Service]
+Type=simple
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+Environment=HOME=%t/pjqaqc-tunnel
+RuntimeDirectory=pjqaqc-tunnel
+ExecStart=/usr/local/bin/cloudflared tunnel --no-autoupdate --metrics 127.0.0.1:0 run --token-file %h/pjqaqc-deployment/secrets/cloudflared_token
+Restart=always
+RestartSec=5s
+TimeoutStopSec=12s
+
+[Install]
+WantedBy=default.target

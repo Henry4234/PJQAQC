@@ -27,10 +27,11 @@ namespace_id = "1002"
   period = 60
 
 # FastAPI 沒有公開網址，Worker 經 Workers VPC 進 Tunnel 是唯一入口，見 DEPLOYMENT.md。
-# API_ORIGIN 由部署流程帶入，EDGE_SHARED_SECRET 是 Worker secret。
-# 沒有設定時 DEMO 仍可正常使用，只有編輯者登入會回 503。
-#
-# 建立 VPC service 後，取消註解並填入 service id：
-# [[vpc_services]]
-# binding = "API_VPC"
-# service_id = "<wrangler vpc service create 回傳的 id>"
+# 實際目的地由 VPC service 決定；API_ORIGIN 只組成請求網址，其中的主機與埠不影響路由。
+# EDGE_SHARED_SECRET 是 Worker secret，不寫在這裡。
+[vars]
+API_ORIGIN = "http://pjqaqc-api"
+
+[[vpc_services]]
+binding = "API_VPC"
+service_id = "01a1aaa9-e984-7af0-8930-df62685a42f4"

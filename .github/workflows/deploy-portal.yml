@@ -32,20 +32,6 @@ jobs:
           persist-credentials: false
       - name: Run the Worker and DEMO tests
         run: node --test tests/worker.test.mjs tests/demo-data.test.mjs tests/audit-tables.test.mjs
+      # EDGE_SHARED_SECRET 是 Worker secret，已存在 Cloudflare，部署時會保留。
       - name: Deploy the Worker
-        env:
-          API_ORIGIN: ${{ vars.API_ORIGIN }}
-        run: |
-          args=(deploy --config cloudflare/wrangler.toml)
-          if [ -n "$API_ORIGIN" ]; then args+=(--var "API_ORIGIN:$API_ORIGIN"); fi
-          npx --yes wrangler@4.119.0 "${args[@]}"
-      - name: Set the secret shared with the API
-        env:
-          EDGE_SHARED_SECRET: ${{ secrets.EDGE_SHARED_SECRET }}
-        run: |
-          if [ -z "$EDGE_SHARED_SECRET" ]; then
-            echo "::notice::EDGE_SHARED_SECRET is not set. DEMO works; editor sign-in returns 503."
-            exit 0
-          fi
-          printf '%s' "$EDGE_SHARED_SECRET" | \
-            npx --yes wrangler@4.119.0 secret put EDGE_SHARED_SECRET --config cloudflare/wrangler.toml
+        run: npx --yes wrangler@4.119.0 deploy --config cloudflare/wrangler.toml
