@@ -1,97 +1,223 @@
 # PJQAQC 上線手冊
 
-公開展示使用 GitHub Pages，由 `main` 的 GitHub Actions 工作流程發布 `demo/` 中的三個靜態檔。展示資料是合成資料，瀏覽器無需連到正式站或資料庫。正式站由 Ubuntu 執行 FastAPI，同一個網域提供前端與 API。
+## 架構
 
-## Cloudflare 前端預覽
+| 使用者 | 連線路徑 | 資料 |
+| --- | --- | --- |
+| 訪客（DEMO 模式） | 瀏覽器 → Cloudflare Worker 靜態檔 | 瀏覽器內的合成資料，不連後端也不連資料庫 |
+| 編輯者 | 瀏覽器 → Cloudflare Worker → Workers VPC → Tunnel → FastAPI → Supabase | 正式資料，可編輯 |
+| 維護 | 管理員裝置 → Tailscale → Ubuntu SSH | 不經過這條路徑提供 API |
 
-Workers Static Assets 預覽以 `frontend/` 產生獨立的瀏覽版。儀表板、紀錄與 L-J 圖使用合成資料，預覽可在瀏覽器中離線查詢。下列指令會把生成的靜態檔發布到 `pjqaqc-frontend-preview` 的 `workers.dev` 網址。
+入口網站只有一個。未登入就是 DEMO；由右上角登入通過後才是編輯者模式。
+
+- **流量**：靜態檔不計入 Worker 請求額度。沒有工作階段 cookie 的 `/api/*` 請求在 Worker 就結束，訪客再多也不會碰到 FastAPI 或 Supabase。
+- **帳號**：帳號密碼由 Supabase Auth 管理。FastAPI 驗證密碼後，檢查 `app_metadata.pjqaqc_access`，再簽發 30 分鐘的 HttpOnly cookie。
+- **只能經 Worker 進入**：FastAPI 沒有公開網址，只綁在主機的 `127.0.0.1`，區網和 Tailscale 都連不到（`tests/private-api.test.mjs` 會檢查設定）。唯一路徑是 Worker 經 Workers VPC 進 Tunnel。FastAPI 另外要求 Worker 的共用密鑰，其他請求一律回 404。
+- **防護分層**：Worker 擋掉匿名請求與跨站寫入，並對登入與 API 限速；真正的權限檢查在 FastAPI。
+- **稽核紀錄**：`qc_results` 等品管與校正紀錄只能新增。API 沒有修改或刪除的路由，`pjqaqc_app` 只有 `INSERT`、`SELECT` 權限，刪除上層主檔也不會連帶刪除；`tests/audit-tables.test.mjs` 會檢查每個遷移。
+- **只有 DEMO 時**：Worker 未設定後端也能運作，DEMO 正常，只有登入會回 503。可以先上線 DEMO，之後再接後端。
+
+## CI/CD
+
+| 工作流程 | 觸發時機 | 內容 |
+| --- | --- | --- |
+| `ci.yml` | 每個 PR 與 `main` | Worker 與 DEMO 測試、Worker 打包檢查、Compose 檢查、映像建置、登入邊界測試 |
+| `deploy-portal.yml` | `main` 的 `frontend/`、`cloudflare/`、`tests/` 變更 | 重跑測試後部署 Worker |
+| `deploy-database.yml` | `main` 的 `supabase/migrations/` 變更 | 列出並套用待執行的遷移（預設關閉） |
+
+在 GitHub 的 Settings → Secrets and variables → Actions 設定下列項目。尚未設定時，部署工作會略過，不會失敗。
+
+| 名稱 | 類型 | 用途 |
+| --- | --- | --- |
+| `CLOUDFLARE_ACCOUNT_ID` | Variable | 要部署到的 Cloudflare 帳號；設定後才會部署入口網站 |
+| `CLOUDFLARE_API_TOKEN` | Secret | 以「Edit Cloudflare Workers」範本建立的 API Token，並加上 Connectivity Directory 的 Bind 權限 |
+| `SUPABASE_MIGRATIONS_ENABLED` | Variable | 設為 `true` 才會自動套用遷移 |
+| `SUPABASE_DB_URL` | Secret | 維護帳號的 PostgreSQL 連線字串 |
+
+部署工作都使用 `production` environment。若要在部署前由人工核准，請在 Settings → Environments → production 加上 Required reviewers。
+
+FastAPI 不會自動部署：CI 通過、合併到 `main` 後，由管理員在主機更新，流程見〈更新與回復〉。
+
+## Supabase
+
+專案為 `tptjijcynzwskfcgkvmx`。正式表與檢視都在 `qaqc` schema，此 schema 不在 Data API 的 Exposed schemas 內，瀏覽器無法直接查詢；所有存取都經過 FastAPI 的 `pjqaqc_app` 帳號。
+
+### 編輯者帳號
+
+1. 在 Authentication → Sign In / Providers 關閉 **Allow new users to sign up**。
+2. 在 Authentication → Users 建立帳號，勾選 Auto Confirm User 並設定密碼。
+3. 授予編輯權限。在 SQL Editor 執行：
+
+   ```sql
+   UPDATE auth.users
+   SET raw_app_meta_data = raw_app_meta_data || '{"pjqaqc_access": true}'
+   WHERE email = 'editor@example.com';
+   ```
+
+只有 Supabase 帳號存在但沒有這個權限時，登入會被拒絕。撤銷權限在下次登入時生效，已簽發的工作階段最長再持續 30 分鐘；若需立即終止全部工作階段，請替換 `secrets/session_key` 並重新建立 app 容器。
+
+### 資料搬移
+
+新的空白環境才需要。
+
+1. 套用 [v3 migration](supabase/migrations/20261104233916_qaqc_v3.sql) 一次。
+2. 在可同時連到 NAS 與 Supabase 的維護機器，使用有來源讀取權限的 MariaDB 設定。由 Supabase Connect → Direct → Session pooler 取得主機，並在 Database → Settings → SSL Configuration 下載公開 CA 憑證。透過維護機器的祕密管理方式提供 `MIGRATION_DATABASE_URL`，連線字串需使用 `sslmode=verify-full`、指向下載憑證的 `sslrootcert`，並使用能寫入 `qaqc` 的維護帳號。
+3. 先執行預設演練。工具逐表驗證筆數與外鍵，成功後回滾。正式切換前，暫停 MariaDB 寫入、完成備份，再加 `--commit` 匯入空的目標。核對 22 張表的筆數並保留來源備份。工具遇到已含資料的目標會中止。
+
+   ```bash
+   cd backend
+   uv sync --locked
+   uv run python migrate_to_postgres.py --source-env /secure/path/mariadb.env
+   uv run python migrate_to_postgres.py --source-env /secure/path/mariadb.env --commit
+   ```
+
+4. 用維護帳號透過 `psql` 執行 `\password pjqaqc_app` 設定獨立高強度密碼，再執行 `ALTER ROLE pjqaqc_app LOGIN;`。Session pooler 的登入名稱為 `pjqaqc_app.<project-ref>`，埠為 `5432`。用此帳號產生正式站 DSN，密碼需做 URL 編碼，查詢參數使用 `sslmode=verify-full&sslrootcert=/run/secrets/supabase_ca`。
+
+### 啟用自動遷移
+
+正式庫的遷移紀錄有 4 筆先前手動操作留下的版本，repo 內沒有對應檔案，因此 `db push` 會拒絕執行。第一次啟用前，由維護機器修復一次：
 
 ```bash
-node cloudflare/build-preview.mjs
-npx wrangler@4.119.0 deploy --config cloudflare/wrangler.toml
+npx supabase@3.0.0 migration repair --remote="$SUPABASE_DB_URL" --status reverted \
+  20261104155236 20261104161047 20261104161124 20261104174221 --yes
+npx supabase@3.0.0 db push --remote="$SUPABASE_DB_URL" --dry-run   # 應顯示 Remote database is up to date
 ```
 
-正式整合時，請建立同來源的 Worker 路由，將首頁、`/login`、`/logout` 與 `/api/*` 經具名 Tunnel 和 Workers VPC Service 轉送 Ubuntu。FastAPI 驗證登入並使用受限帳號連 Supabase；私有頁面與 API 回應維持禁止快取。
+這只更新遷移紀錄表，不會改動資料或結構。
 
-## 正式部署
+## 部署 FastAPI
 
-| 使用者 | 連線路徑 |
-| --- | --- |
-| 匿名瀏覽 | 瀏覽器 → GitHub Pages |
-| 正式站操作 | 瀏覽器 → Cloudflare Tunnel → Ubuntu FastAPI → Supabase Auth 與 PostgreSQL |
-| 維護 | 管理員裝置 → Tailscale → Ubuntu SSH |
+FastAPI 以 systemd 使用者服務跑在 Ubuntu 主機的一般帳號下，只綁 `127.0.0.1`，這個帳號不需要 sudo 或 Docker 權限。主機的 Tailscale 位址不寫進這個公開 repo。
 
-## Ubuntu 網路條件
+### 維護連線
 
-保持既有入站限制。Compose 未發布主機連接埠，`cloudflared` 和 FastAPI 透過專用 Docker 網路通訊。Tunnel 是讓核准人員透過 Cloudflare 進入應用程式的路徑，需要符合主機的資安政策。
+SSH 應只對 Tailscale 開放，不對區網或網際網路開放：
+
+```bash
+sudo apt install -y openssh-server
+sudo systemctl enable --now ssh
+sudo ufw allow in on tailscale0 to any port 22 proto tcp
+```
+
+### Ubuntu 網路條件
+
+保持既有入站限制。Tunnel 只由主機向外連線，不需要開放任何入站埠。
 
 | 出站目的 | 用途 |
 | --- | --- |
-| 核准的 DNS 解析器 | 查詢 Tunnel、Access 與 PostgreSQL 主機 |
+| 核准的 DNS 解析器 | 查詢 Tunnel 與 PostgreSQL 主機 |
 | `region1.v2.argotunnel.com`、`region2.v2.argotunnel.com` 的 TCP 或 UDP `7844` | Cloudflare Tunnel。若只允許 TCP，使用 HTTP/2 |
 | `tptjijcynzwskfcgkvmx.supabase.co:443` | FastAPI 的 Supabase Auth 電子郵件與密碼驗證 |
 | `aws-0-ap-northeast-1.pooler.supabase.com` TCP `5432` | PJQAQC 的 Session pooler，供 FastAPI 與搬移工具使用 PostgreSQL TLS |
-| 核准的 GitHub、映像倉庫與 Python 套件來源 HTTPS `443` | 更新程式與映像；可由核准的建置環境建好映像再交付 |
-
-在 Ubuntu 執行連線檢查，並從實際容器網路再測一次。Docker 轉送流量的出站規則應由管理員驗證。
+| `github.com` 與 Python 套件來源 HTTPS `443` | 更新程式與相依套件 |
 
 ```bash
 nc -vz -w 5 region1.v2.argotunnel.com 7844
 nc -vz -w 5 region2.v2.argotunnel.com 7844
-nc -vz -w 5 "$SUPABASE_POOLER_HOST" 5432
-curl --silent --show-error --max-time 8 --output /dev/null --write-out '%{http_code}\n' \
-  https://tptjijcynzwskfcgkvmx.supabase.co/auth/v1/health
+nc -vz -w 5 aws-0-ap-northeast-1.pooler.supabase.com 5432
+curl --silent --show-error --max-time 8 --output /dev/null --write-out '%{http_code}
+'   https://tptjijcynzwskfcgkvmx.supabase.co/auth/v1/health
 ```
 
-Auth 健康端點回傳 HTTP 狀態表示 HTTPS 可達，應用程式登入時會另外提供 publishable key。Ubuntu 的 SSH 維護可經 Tailscale 進行，正式站使用者以瀏覽器登入。若 Ubuntu 禁止直連外部資料庫，需先核准受控出站路徑，並保留 PostgreSQL TLS 主機名驗證。
+### 主機上的配置
 
-## Supabase 初始化與搬移
+全部放在 `~/pjqaqc-deployment/`：
 
-1. 選擇 PJQAQC 專案 `tptjijcynzwskfcgkvmx`。使用新的空白環境時，套用 [v3 migration](supabase/migrations/202611040001_qaqc_v3.sql) 一次。正式表與檢視都在 `qaqc` schema。此 schema 維持在 Data API 的 Exposed schemas 之外，專案只透過 PostgreSQL 使用時可停用 Data API。
-2. 在可同時連到 NAS 與 Supabase 的維護機器，使用有來源讀取權限的 MariaDB 設定。由 Supabase Connect → Direct → Session pooler 取得主機，並在 Database → Settings → SSL Configuration 下載公開 CA 憑證。透過維護機器的祕密管理方式提供 `MIGRATION_DATABASE_URL`，連線字串需使用 `sslmode=verify-full`、指向下載憑證的 `sslrootcert`，並使用能寫入 `qaqc` 的維護帳號。
-3. 先執行預設演練。工具逐表驗證筆數與外鍵，成功後回滾。正式切換前，暫停 MariaDB 寫入、完成備份，再加 `--commit` 匯入空的目標。核對 22 張表的筆數並保留來源備份。工具遇到已含資料的目標會中止。
+| 路徑 | 內容 |
+| --- | --- |
+| `code/` | 這個 repo 的 checkout |
+| `app.env` | `PUBLIC_HOSTNAME`、`SUPABASE_URL`、`SUPABASE_PUBLISHABLE_KEY`，範本為 `.env.production.sample` |
+| `bin/uv` | Python 套件工具 |
+| `secrets/` | 目錄權限 `0700`，檔案權限 `0600`，內容如下 |
+
+| 檔案 | 內容 |
+| --- | --- |
+| `secrets/database_url` | `pjqaqc_app` 的 DSN，`sslrootcert` 指向下面的 `supabase_ca` |
+| `secrets/supabase_ca` | 從 Supabase 下載的公開憑證 |
+| `secrets/session_key` | `openssl rand -hex 32 > secrets/session_key` |
+| `secrets/edge_secret` | `openssl rand -hex 32 > secrets/edge_secret` |
+| `secrets/cloudflared_token` | Tunnel token，見〈連接 Worker 與 FastAPI〉 |
+
+### 首次安裝
 
 ```bash
-cd backend
-uv sync --locked
-uv run python migrate_to_postgres.py --source-env /secure/path/mariadb.env
-uv run python migrate_to_postgres.py --source-env /secure/path/mariadb.env --commit
+loginctl enable-linger "$USER"   # 讓服務在登出後繼續執行，可能需要 sudo
+cd ~/pjqaqc-deployment
+git clone https://github.com/Henry4234/PJQAQC.git code
+(cd code/backend && ../../bin/uv sync --locked --no-dev)
+install -m 644 code/deploy/*.service ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now pjqaqc-api pjqaqc-tunnel
 ```
 
-4. 用維護帳號透過 `psql` 執行 `\password pjqaqc_app` 設定獨立高強度密碼，再執行 `ALTER ROLE pjqaqc_app LOGIN;`。Session pooler 的登入名稱為 `pjqaqc_app.<project-ref>`，埠為 `5432`。用此帳號產生正式站 DSN，密碼需做 URL 編碼，查詢參數使用 `sslmode=verify-full&sslrootcert=/run/secrets/supabase_ca`。
-
-## 正式站帳號
-
-在 Supabase Authentication 啟用 Email 登入並停用公開註冊。管理員建立已確認信箱且設有密碼的帳號，再使用 Supabase Auth Admin API 設定 `app_metadata.pjqaqc_access = true`。使用者以同一套帳號登入正式站後，可使用現有的讀寫管理功能。應用程式只用 publishable key 呼叫 Auth，帳號管理憑證由管理員另行保管。
-
-登入工作階段長度為 30 分鐘。撤銷帳號授權會在下次登入時生效，已簽發的工作階段可持續到期。若需立即終止全部工作階段，可替換工作階段簽章金鑰並重新建立 app 容器。
-
-## Cloudflare 與 Ubuntu 部署
-
-1. 在 Cloudflare DNS 網域啟用後，選擇正式子網域。建立 remotely managed Tunnel，發布正式 hostname 並將服務填入 `http://app:8000`。將 HTTP Host Header 設為正式 hostname，並為該 hostname 啟用 HTTPS 重新導向與 Bypass Cache。正式站的登入頁由 FastAPI 提供。
-2. 在 Ubuntu 的部署目錄複製 `.env.production.sample` 為 `.env.production`，填入 hostname 與 Supabase publishable key。用權限 `0700` 的 `secrets/` 目錄保存 `database_url`、`cloudflared_token` 和從 Supabase 下載的公開憑證 `supabase_ca`。使用 `openssl rand -hex 32 > secrets/session_key` 產生工作階段金鑰。在 Compose bind mount 中，檔案需能被各自的非 root 容器程序讀取。以受限父目錄保護來源檔，或由伺服器的祕密管理機制掛載。正式環境預設關閉 AI 判讀。
-3. 執行下列命令部署服務。
-4. 部署已驗證的 Git commit。GitHub Actions 負責檢查映像和 Compose 設定，Ubuntu 的部署由管理員透過 Tailscale 執行。保留上一個可部署 commit 與映像。正式站從登入到讀取資料驗證通過後再邀請使用者。
+### 更新與回復
 
 ```bash
-docker compose --env-file .env.production config --quiet
-docker compose --env-file .env.production up -d --build
-docker compose --env-file .env.production ps
+cd ~/pjqaqc-deployment/code
+git fetch origin
+git checkout --detach origin/main
+(cd backend && ../../bin/uv sync --locked --no-dev)
+systemctl --user restart pjqaqc-api
 ```
 
-## 驗收與維運
+回復時把 `origin/main` 換成前一個 commit。服務檔有變更時，要再執行一次 `install` 與 `daemon-reload`。正式環境預設關閉 AI 判讀。
 
-- 以匿名瀏覽器驗證展示頁可操作，正式網址會顯示登入頁，正式 API 回傳 HTTP 401。以已授權和未授權的 Supabase 帳號各驗證一次。登入後開啟 `/api/ready`，並用核准的測試資料驗證查詢與寫入。
-- 在 Ubuntu 驗證 SSH 經核准的維護路徑可達，FastAPI 容器沒有發布主機埠。核對 Tunnel 狀態、Supabase Auth 登入紀錄及資料庫用量。
-- Supabase Free 的資料庫容量為 500 MB，低活動約一週可能暫停。定期以維護帳號對 `qaqc` 做加密的異地備份，實際還原到獨立環境驗證。搬移切換前保留 MariaDB 快照。切換後若正式站已產生新寫入，回復來源前先保存並核對新增資料。
+### 連接 Worker 與 FastAPI
+
+使用 Workers VPC，不要在 Tunnel 發布公開 hostname，FastAPI 才不會有任何公開網址。Workers VPC 目前為 beta。以下指令在已登入 Cloudflare 的管理機器執行。
+
+1. 建立 Tunnel，並把 token 存入主機的 `secrets/cloudflared_token`。Token 可由 Cloudflare API 的 `GET /accounts/<account-id>/cfd_tunnel/<tunnel-id>/token` 取得。
+
+   ```bash
+   npx wrangler@4.119.0 tunnel create pjqaqc-api
+   ```
+
+2. 建立只指向 FastAPI 的 VPC service，並把回傳的 id 填入 `cloudflare/wrangler.toml` 的 `[[vpc_services]]`。
+
+   ```bash
+   npx wrangler@4.119.0 vpc service create pjqaqc-api      --type http --tunnel-id <tunnel-id> --ipv4 127.0.0.1 --http-port 18741
+   ```
+
+3. 部署 Worker，再設定與主機相同的共用密鑰。密鑰會保留在 Cloudflare，之後部署不用重設。
+
+   ```bash
+   npx wrangler@4.119.0 deploy --config cloudflare/wrangler.toml
+   ssh <主機> 'tr -d "
+" < ~/pjqaqc-deployment/secrets/edge_secret'      | npx wrangler@4.119.0 secret put EDGE_SHARED_SECRET --config cloudflare/wrangler.toml
+   ```
+
+### 改用 Docker（選用）
+
+`compose.yaml` 提供更強的隔離（唯讀檔案系統、移除 capabilities、專用非 root 使用者），CI 也會建置並測試映像。代價是帳號要加入 `docker` 群組，這個權限近似 root。要切換時：
+
+1. 複製 `app.env` 為 `.env.production`，把上述 secrets 放在 repo 的 `secrets/`，並讓容器程序讀得到。
+2. 把 VPC service 改為 `--hostname app --http-port 8000`。
+3. 停用兩個使用者服務，再執行 `docker compose --env-file .env.production up -d --build`。
+
+## 驗收
+
+- 以無痕視窗開啟入口網站：右上角顯示 DEMO 與登入按鈕，各頁都有資料，沒有編輯按鈕。開發者工具的 Network 中，`/api/` 只會出現 `/api/auth/session`。
+- 以未授權的 Supabase 帳號登入，應被拒絕。
+- 以編輯者帳號登入：右上角顯示編輯者模式與帳號，看到的是正式資料。用核准的測試資料修改一個儀器參數並登錄一筆品管結果，重新整理後資料仍在。
+- 登出後回到 DEMO。
+- 從 Tailscale 上的另一台裝置確認 SSH 可連，但 FastAPI 連不到：`nc -vz -w 5 <主機的 Tailscale 位址> 18741` 應失敗。
+- 在主機執行 `ss -tln | grep 18741`，應只看到 `127.0.0.1`。
+- 核對 Tunnel 狀態、Supabase Auth 登入紀錄及資料庫用量。
+
+## 維運注意事項
+
+- Supabase Free 的資料庫容量為 500 MB，低活動約一週可能暫停。定期以維護帳號對 `qaqc` 做加密的異地備份，實際還原到獨立環境驗證。
+- 搬移切換前保留 MariaDB 快照。切換後若正式站已產生新寫入，回復來源前先保存並核對新增資料。
 - 公開 GitHub repo 歷史含先前追蹤的 SQL 備份和樣本資料。請確認其公開授權，正式匯出與資料庫密碼應保存在受控位置。
+- 已記錄的品管結果與校正事件是稽核紀錄：`pjqaqc_app` 只有新增權限，沒有修改與刪除權限。修改目標值請透過平測建立新版本。
 
-參考文件
+## 參考文件
 
-- [GitHub Pages 概覽](https://docs.github.com/en/pages/getting-started-with-github-pages/what-is-github-pages)
+- [Workers Static Assets](https://developers.cloudflare.com/workers/static-assets/)
+- [Workers Rate Limiting](https://developers.cloudflare.com/workers/runtime-apis/bindings/rate-limit/)
+- [Workers VPC](https://developers.cloudflare.com/workers-vpc/)
 - [Cloudflare Tunnel 出站規則](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/configure-tunnels/tunnel-with-firewall/)
-- [Cloudflare Tunnel 發布路由](https://developers.cloudflare.com/tunnel/concepts/routing/)
-- [Supabase 密碼登入](https://supabase.com/docs/guides/auth/passwords)及 [Auth 管理 API](https://supabase.com/docs/reference/javascript/auth-admin-updateuserbyid)
-- [Docker 與 Ubuntu 防火牆](https://docs.docker.com/engine/install/ubuntu/)
+- [Supabase 密碼登入](https://supabase.com/docs/guides/auth/passwords)
 - [Supabase PostgreSQL 連線](https://supabase.com/docs/guides/database/connecting-to-postgres)
 - [Supabase 免費方案暫停](https://supabase.com/docs/guides/platform/free-project-pausing)及[資料庫備份](https://supabase.com/docs/guides/platform/backups)
+- [Docker 與 Ubuntu 防火牆](https://docs.docker.com/engine/install/ubuntu/)

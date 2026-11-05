@@ -1,7 +1,37 @@
-name = "pjqaqc-frontend-preview"
-compatibility_date = "2026-11-05"
+name = "pjqaqc"
+main = "worker.mjs"
+compatibility_date = "2026-08-01"
 workers_dev = true
 preview_urls = false
 
+# 靜態前端直接由 Static Assets 回應，不計入 Worker 請求額度；只有 /api/* 會執行 Worker。
 [assets]
-directory = "../.deploy-tools/cloudflare-preview"
+directory = "../frontend"
+binding = "ASSETS"
+run_worker_first = ["/api/*"]
+
+[[ratelimits]]
+name = "LOGIN_LIMIT"
+namespace_id = "1001"
+
+  [ratelimits.simple]
+  limit = 10
+  period = 60
+
+[[ratelimits]]
+name = "API_LIMIT"
+namespace_id = "1002"
+
+  [ratelimits.simple]
+  limit = 300
+  period = 60
+
+# FastAPI 沒有公開網址，Worker 經 Workers VPC 進 Tunnel 是唯一入口，見 DEPLOYMENT.md。
+# 實際目的地由 VPC service 決定；API_ORIGIN 只組成請求網址，其中的主機與埠不影響路由。
+# EDGE_SHARED_SECRET 是 Worker secret，不寫在這裡。
+[vars]
+API_ORIGIN = "http://pjqaqc-api"
+
+[[vpc_services]]
+binding = "API_VPC"
+service_id = "01a1aaa9-e984-7af0-8930-df62685a42f4"

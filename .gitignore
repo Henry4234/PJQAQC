@@ -40,3 +40,7 @@ __pycache__/
 
 # Excel 原始檔案
 backend/*.xlsx
+
+# Wrangler 與 Supabase CLI 的本機暫存
+.wrangler/
+supabase/.temp/

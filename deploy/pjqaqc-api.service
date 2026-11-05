@@ -1,0 +1,24 @@
+# FastAPI。只綁在 127.0.0.1，外部只能經 pjqaqc-tunnel 與 Cloudflare Worker 進入。
+[Unit]
+Description=PJQAQC FastAPI
+
+[Service]
+Type=simple
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+WorkingDirectory=%h/pjqaqc-deployment/code/backend
+EnvironmentFile=%h/pjqaqc-deployment/app.env
+Environment=APP_ENV=production
+Environment=DATABASE_URL_FILE=%h/pjqaqc-deployment/secrets/database_url
+Environment=SESSION_KEY_FILE=%h/pjqaqc-deployment/secrets/session_key
+Environment=EDGE_SECRET_FILE=%h/pjqaqc-deployment/secrets/edge_secret
+Environment=PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 TZ=Asia/Taipei
+ExecStart=%h/pjqaqc-deployment/code/backend/.venv/bin/python -m uvicorn main:app --host 127.0.0.1 --port 18741 --no-proxy-headers --no-access-log --limit-concurrency 32
+Restart=always
+RestartSec=5s
+TimeoutStopSec=12s
+
+[Install]
+WantedBy=default.target
