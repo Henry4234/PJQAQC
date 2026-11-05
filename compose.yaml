@@ -1,5 +1,6 @@
 services:
   app:
+    image: ${API_IMAGE:-ghcr.io/henry4234/pjqaqc-api:latest}
     build: .
     restart: unless-stopped
     init: true
@@ -17,9 +18,11 @@ services:
       SUPABASE_PUBLISHABLE_KEY: ${SUPABASE_PUBLISHABLE_KEY:?Set SUPABASE_PUBLISHABLE_KEY}
       DATABASE_URL_FILE: /run/secrets/database_url
       SESSION_KEY_FILE: /run/secrets/session_key
+      EDGE_SECRET_FILE: /run/secrets/edge_secret
     secrets:
       - database_url
       - session_key
+      - edge_secret
       - supabase_ca
     healthcheck:
       test: [CMD, python, -c, "import socket; socket.create_connection(('127.0.0.1', 8000), 2).close()"]
@@ -43,6 +46,8 @@ services:
 secrets:
   database_url:
     file: ./secrets/database_url
+  edge_secret:
+    file: ./secrets/edge_secret
   session_key:
     file: ./secrets/session_key
   supabase_ca:

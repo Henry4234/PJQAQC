@@ -46,6 +46,11 @@ else:
         CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"],
     )
 
+    @app.get("/api/auth/session", include_in_schema=False)
+    def local_session() -> dict:
+        """本機開發不經過登入，前端直接進入編輯者模式。"""
+        return {"authenticated": True, "email": None, "local": True}
+
 app.include_router(register.router)
 app.include_router(manage.router)
 
@@ -670,6 +675,7 @@ async def invalid_database_value(request: Request, exc: Exception):
 
 
 # ----------------------------- 靜態前端 ----------------------------- #
+# 正式環境的前端由 Cloudflare Worker 提供；這裡只服務本機開發。
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
-if FRONTEND_DIR.exists():
+if not PRODUCTION and FRONTEND_DIR.exists():
     app.mount("/", StaticFiles(directory=str(FRONTEND_DIR), html=True), name="frontend")

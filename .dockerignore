@@ -1,7 +1,6 @@
 **
 !backend/
 !backend/database.py
-!backend/login.html
 !backend/main.py
 !backend/manage.py
 !backend/production.py
@@ -10,7 +9,3 @@
 !backend/westgard_guide.md
 !backend/pyproject.toml
 !backend/uv.lock
-!frontend/
-!frontend/app.js
-!frontend/index.html
-!frontend/style.css
