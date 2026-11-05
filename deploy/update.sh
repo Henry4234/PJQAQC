@@ -45,7 +45,8 @@ healthy() {
   return 1
 }
 
-git -C "$code" fetch --quiet origin main
+# 主機的 checkout 可能只追蹤單一分支，這時 fetch origin main 不會更新 origin/main，所以明確指定。
+git -C "$code" fetch --quiet origin +refs/heads/main:refs/remotes/origin/main
 target="$(git -C "$code" rev-parse --verify "$target^{commit}")"
 previous="$(git -C "$code" rev-parse HEAD)"
 short="${target:0:7}"

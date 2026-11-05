@@ -33,7 +33,8 @@ if [ -z "$token" ]; then
 fi
 
 # 主機的 checkout 由 update.sh 管理，所以這裡直接讀 origin/main，不切換版本。
-git -C "$root/code" fetch --quiet origin main
+# 明確指定 ref：checkout 只追蹤單一分支時，fetch origin main 不會更新 origin/main。
+git -C "$root/code" fetch --quiet origin +refs/heads/main:refs/remotes/origin/main
 mkdir -p "$runner" "$root/bin" "$units"
 git -C "$root/code" show origin/main:deploy/runner-job-guard.sh > "$root/bin/runner-job-guard.sh"
 chmod 700 "$root/bin/runner-job-guard.sh"

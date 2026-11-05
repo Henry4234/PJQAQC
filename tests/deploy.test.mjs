@@ -115,7 +115,7 @@ test("the guard refuses everything else", { skip }, () => {
 });
 
 // A real git history with stand-ins for the host's commands.
-function host() {
+function host({ cloneArgs = null } = {}) {
   const dir = mkdtempSync(join(process.env.TEST_TMPDIR || tmpdir(), "pjqaqc-deploy-")).replaceAll("\\", "/");
   const home = `${dir}/home`;
   const root = `${home}/pjqaqc-deployment`;
@@ -145,7 +145,16 @@ function host() {
   commit("deploy/pjqaqc-api.service", "[Service]\n");
   const first = commit("backend/app.py", "version = 1\n");
   git(work, "push", "-q", "origin", "main");
-  git(dir, "clone", "-q", origin, code);
+  if (cloneArgs) {
+    // A checkout that only tracks another branch has no origin/main, as on the real host.
+    git(work, "push", "-q", "origin", "main:refs/heads/deployed");
+    const url = origin.startsWith("/") ? `file://${origin}` : `file:///${origin}`;
+    git(dir, "clone", "-q", ...cloneArgs, "--branch", "deployed", url, code);
+    const refs = spawnSync("git", ["rev-parse", "--verify", "--quiet", "origin/main"], { cwd: code, encoding: "utf8" });
+    assert.notEqual(refs.status, 0, "this checkout should start without origin/main");
+  } else {
+    git(dir, "clone", "-q", origin, code);
+  }
   git(code, "checkout", "-q", "--detach", first);
   writeFileSync(`${root}/secrets/edge_secret`, "shared-secret\n");
 
@@ -199,6 +208,32 @@ test("update.sh installs a backend change and restarts the API", { skip }, () =>
     assert.doesNotMatch(h.calls(), /shared-secret/, "the secret must not be a command-line argument");
     assert.doesNotMatch(run.stdout, /pjqaqc-deployment|shared-secret/, "Actions logs are public");
   } finally { h.remove(); }
+});
+
+for (const [name, cloneArgs] of Object.entries({
+  "tracks one other branch": ["--single-branch"],
+  "is a shallow clone": ["--depth", "1"],
+})) {
+  test(`update.sh keeps working when the host's checkout ${name}`, { skip }, () => {
+    const h = host({ cloneArgs });
+    try {
+      for (const version of [2, 3]) {  // the second round fails if origin/main goes stale
+        const next = h.commit("backend/app.py", `version = ${version}\n`);
+        h.publish();
+        const run = h.update(next);
+        assert.equal(run.status, 0, `version ${version}: ${run.stdout}${run.stderr}`);
+        assert.equal(h.head(), next);
+      }
+    } finally { h.remove(); }
+  });
+}
+
+test("the scripts and the guide never rely on the checkout's own fetch settings", () => {
+  const explicit = /fetch(?: --quiet)? origin \+refs\/heads\/main:refs\/remotes\/origin\/main/;
+  for (const file of ["deploy/update.sh", "deploy/install-runner.sh", "DEPLOYMENT.md"]) {
+    assert.match(read(file), explicit, file);
+    assert.doesNotMatch(read(file), /git( -C "\$\w+")? fetch( --quiet)? origin( main)?\s*$/m, `${file} has a plain fetch`);
+  }
 });
 
 test("update.sh rolls back when the new version does not come up", { skip }, () => {

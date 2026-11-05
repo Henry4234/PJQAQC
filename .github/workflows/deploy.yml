@@ -47,7 +47,7 @@ jobs:
       - name: Update the API to the tested commit
         run: |
           cd "$HOME/pjqaqc-deployment/code"
-          git fetch --quiet origin main
+          git fetch --quiet origin +refs/heads/main:refs/remotes/origin/main
           git show "$COMMIT:deploy/update.sh" > "$RUNNER_TEMP/update.sh"
           bash "$RUNNER_TEMP/update.sh" "$COMMIT"
 
