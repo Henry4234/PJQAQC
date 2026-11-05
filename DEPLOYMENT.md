@@ -2,6 +2,19 @@
 
 公開展示使用 GitHub Pages，由 `main` 的 GitHub Actions 工作流程發布 `demo/` 中的三個靜態檔。展示資料是合成資料，瀏覽器無需連到正式站或資料庫。正式站由 Ubuntu 執行 FastAPI，同一個網域提供前端與 API。
 
+## Cloudflare 前端預覽
+
+Workers Static Assets 預覽以 `frontend/` 產生獨立的瀏覽版。儀表板、紀錄與 L-J 圖使用合成資料，預覽可在瀏覽器中離線查詢。下列指令會把生成的靜態檔發布到 `pjqaqc-frontend-preview` 的 `workers.dev` 網址。
+
+```bash
+node cloudflare/build-preview.mjs
+npx wrangler@4.119.0 deploy --config cloudflare/wrangler.toml
+```
+
+正式整合時，請建立同來源的 Worker 路由，將首頁、`/login`、`/logout` 與 `/api/*` 經具名 Tunnel 和 Workers VPC Service 轉送 Ubuntu。FastAPI 驗證登入並使用受限帳號連 Supabase；私有頁面與 API 回應維持禁止快取。
+
+## 正式部署
+
 | 使用者 | 連線路徑 |
 | --- | --- |
 | 匿名瀏覽 | 瀏覽器 → GitHub Pages |

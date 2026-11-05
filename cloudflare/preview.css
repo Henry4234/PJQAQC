@@ -1,0 +1,12 @@
+.preview-notice {
+  margin: 0 0 1rem;
+  padding: .7rem .9rem;
+  border: 1px solid #6686aa;
+  border-radius: .55rem;
+  line-height: 1.5;
+}
+
+.nav-link:not([data-view="dashboard"], [data-view="qc-results"], [data-view="lj"]),
+.nav-group:not(:has([data-view="qc-results"])) {
+  display: none;
+}
