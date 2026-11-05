@@ -156,7 +156,7 @@ systemctl --user enable --now pjqaqc-api pjqaqc-tunnel
 cd ~/pjqaqc-deployment/code
 git fetch origin
 git checkout --detach origin/main
-(cd backend && ../../../bin/uv sync --locked --no-dev)
+(cd backend && ../../bin/uv sync --locked --no-dev)
 systemctl --user restart pjqaqc-api
 ```
 
